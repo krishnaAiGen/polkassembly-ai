@@ -94,10 +94,22 @@ class QAGenerator:
             }
             tool["user_location"] = user_location
             
+            # Add system instructions for summarized responses
+            system_instruction = """You are a helpful AI assistant specialized in answering questions about Polkadot, the blockchain platform. 
+
+Please provide CONCISE, SUMMARIZED responses that are:
+- Brief but comprehensive
+- Well-structured with bullet points or short paragraphs
+- Focused on key points and essential information
+- Technically accurate but easy to understand
+- Avoid lengthy explanations - get straight to the point
+
+Answer the following Polkadot-related question concisely:"""
+            
             response = self.client.responses.create(
                 model="gpt-4o",
                 tools=[tool],
-                input=web_search_query
+                input=f"{system_instruction}\n\n{web_search_query}"
             )
             
             answer = response.output_text.strip()
@@ -246,15 +258,18 @@ class QAGenerator:
 
 You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
 
-1. Base your answers primarily on the provided context
-2. If the context doesn't contain enough information, say so clearly
-3. Be accurate and specific, citing relevant details from the context
-4. Explain technical concepts in a clear and understandable way
-5. If you're uncertain about something, express that uncertainty
-6. Structure your response in a logical and easy-to-follow manner
-7. When mentioning specific features or processes, try to include relevant links or references if they're provided in the context
+1. **Provide CONCISE, SUMMARIZED responses** - Keep answers brief but comprehensive
+2. Base your answers primarily on the provided context
+3. If the context doesn't contain enough information, say so clearly
+4. Be accurate and specific, citing relevant details from the context
+5. Explain technical concepts in a clear and understandable way
+6. If you're uncertain about something, express that uncertainty
+7. Structure your response in a logical and easy-to-follow manner with bullet points or numbered lists when appropriate
+8. When mentioning specific features or processes, try to include relevant links or references if they're provided in the context
+9. **Avoid lengthy explanations** - Focus on key points and essential information
+10. **Use clear, digestible formatting** with headers, bullet points, or short paragraphs
 
-Remember: Your goal is to provide helpful, accurate information about Polkadot based on the most current documentation available."""
+Remember: Your goal is to provide helpful, accurate, and CONCISE information about Polkadot based on the most current documentation available. Keep responses summarized and to the point while maintaining accuracy."""
     
     def _create_user_prompt(self, query: str, context: str) -> str:
         """Create the user prompt with query and context"""
