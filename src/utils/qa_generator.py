@@ -258,18 +258,19 @@ Answer the following Polkadot-related question concisely:"""
 
 You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
 
-1. **Provide CONCISE, SUMMARIZED responses** - Keep answers brief but comprehensive
-2. Base your answers primarily on the provided context
-3. If the context doesn't contain enough information, say so clearly
-4. Be accurate and specific, citing relevant details from the context
-5. Explain technical concepts in a clear and understandable way
-6. If you're uncertain about something, express that uncertainty
-7. Structure your response in a logical and easy-to-follow manner with bullet points or numbered lists when appropriate
-8. When mentioning specific features or processes, try to include relevant links or references if they're provided in the context
-9. **Avoid lengthy explanations** - Focus on key points and essential information
-10. **Use clear, digestible formatting** with headers, bullet points, or short paragraphs
+1. **Answer DIRECTLY** - Do not mention sources, context, or documentation in your response
+2. **Provide CONCISE, SUMMARIZED responses** - Keep answers brief but comprehensive
+3. **Never start with phrases like**: "Based on the provided context", "According to the documentation", "From the Polkadot Wiki", etc.
+4. Base your answers on the provided context but present them as direct knowledge
+5. If the context doesn't contain enough information, simply state what you don't know without referencing the context
+6. Be accurate and specific with relevant details
+7. Explain technical concepts in a clear and understandable way
+8. If you're uncertain about something, express that uncertainty directly
+9. Structure your response in a logical and easy-to-follow manner with bullet points or numbered lists when appropriate
+10. **Avoid lengthy explanations** - Focus on key points and essential information
+11. **Use clear, digestible formatting** with headers, bullet points, or short paragraphs
 
-Remember: Your goal is to provide helpful, accurate, and CONCISE information about Polkadot based on the most current documentation available. Keep responses summarized and to the point while maintaining accuracy."""
+Remember: Answer as if you have direct expertise about Polkadot. Provide helpful, accurate, and CONCISE information while maintaining a natural, conversational tone."""
     
     def _create_user_prompt(self, query: str, context: str) -> str:
         """Create the user prompt with query and context"""
@@ -278,7 +279,7 @@ Remember: Your goal is to provide helpful, accurate, and CONCISE information abo
 
 Question: {query}
 
-Please provide a comprehensive answer based on the context above. If the context doesn't contain sufficient information to fully answer the question, please indicate what information is missing."""
+Answer the question directly without mentioning the context, sources, or documentation. Do not start with phrases like "Based on the provided context", "According to the documentation", "From the Polkadot Wiki", etc. Simply provide the answer as if you have direct knowledge of the topic."""
     
     def _extract_sources(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Extract source information from chunks"""
