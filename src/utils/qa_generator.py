@@ -94,10 +94,22 @@ class QAGenerator:
             }
             tool["user_location"] = user_location
             
+            # Add system instructions for summarized responses
+            system_instruction = """You are a helpful AI assistant specialized in answering questions about Polkadot, the blockchain platform. 
+
+Please provide CONCISE, SUMMARIZED responses that are:
+- Brief but comprehensive
+- Well-structured with bullet points or short paragraphs
+- Focused on key points and essential information
+- Technically accurate but easy to understand
+- Avoid lengthy explanations - get straight to the point
+
+Answer the following Polkadot-related question concisely:"""
+            
             response = self.client.responses.create(
                 model="gpt-4o",
                 tools=[tool],
-                input=web_search_query
+                input=f"{system_instruction}\n\n{web_search_query}"
             )
             
             answer = response.output_text.strip()
@@ -246,15 +258,19 @@ class QAGenerator:
 
 You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
 
-1. Base your answers primarily on the provided context
-2. If the context doesn't contain enough information, say so clearly
-3. Be accurate and specific, citing relevant details from the context
-4. Explain technical concepts in a clear and understandable way
-5. If you're uncertain about something, express that uncertainty
-6. Structure your response in a logical and easy-to-follow manner
-7. When mentioning specific features or processes, try to include relevant links or references if they're provided in the context
+1. **Answer DIRECTLY** - Do not mention sources, context, or documentation in your response
+2. **Provide CONCISE, SUMMARIZED responses** - Keep answers brief but comprehensive
+3. **Never start with phrases like**: "Based on the provided context", "According to the documentation", "From the Polkadot Wiki", etc.
+4. Base your answers on the provided context but present them as direct knowledge
+5. If the context doesn't contain enough information, simply state what you don't know without referencing the context
+6. Be accurate and specific with relevant details
+7. Explain technical concepts in a clear and understandable way
+8. If you're uncertain about something, express that uncertainty directly
+9. Structure your response in a logical and easy-to-follow manner with bullet points or numbered lists when appropriate
+10. **Avoid lengthy explanations** - Focus on key points and essential information
+11. **Use clear, digestible formatting** with headers, bullet points, or short paragraphs
 
-Remember: Your goal is to provide helpful, accurate information about Polkadot based on the most current documentation available."""
+Remember: Answer as if you have direct expertise about Polkadot. Provide helpful, accurate, and CONCISE information while maintaining a natural, conversational tone."""
     
     def _create_user_prompt(self, query: str, context: str) -> str:
         """Create the user prompt with query and context"""
@@ -263,7 +279,7 @@ Remember: Your goal is to provide helpful, accurate information about Polkadot b
 
 Question: {query}
 
-Please provide a comprehensive answer based on the context above. If the context doesn't contain sufficient information to fully answer the question, please indicate what information is missing."""
+Answer the question directly without mentioning the context, sources, or documentation. Do not start with phrases like "Based on the provided context", "According to the documentation", "From the Polkadot Wiki", etc. Simply provide the answer as if you have direct knowledge of the topic."""
     
     def _extract_sources(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Extract source information from chunks"""
