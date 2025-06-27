@@ -1,0 +1,336 @@
+import openai
+import logging
+from typing import List, Dict, Any, Optional
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class QAGenerator:
+    """Generate answers using OpenAI based on retrieved document chunks"""
+    
+    def __init__(self, 
+                 openai_api_key: str,
+                 model: str = "gpt-3.5-turbo",
+                 temperature: float = 0.1,
+                 max_tokens: int = 1000,
+                 enable_web_search: bool = True,
+                 web_search_context_size: str = "high"):
+        
+        self.openai_api_key = openai_api_key
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.enable_web_search = enable_web_search
+        self.web_search_context_size = web_search_context_size
+        
+        # Initialize OpenAI client
+        self.client = openai.OpenAI(api_key=self.openai_api_key)
+    
+    def create_context_from_chunks(self, chunks: List[Dict[str, Any]], max_context_length: int = 4000) -> str:
+        """
+        Create context string from retrieved chunks
+        
+        Args:
+            chunks: List of chunk dictionaries with content and metadata
+            max_context_length: Maximum length of context in characters
+            
+        Returns:
+            Formatted context string
+        """
+        context_parts = []
+        current_length = 0
+        
+        for i, chunk in enumerate(chunks):
+            # Format chunk with source information
+            source_info = ""
+            metadata = chunk.get('metadata', {})
+            
+            if metadata.get('title'):
+                source_info += f"Title: {metadata['title']}\n"
+            if metadata.get('url'):
+                source_info += f"URL: {metadata['url']}\n"
+            if metadata.get('source'):
+                source_info += f"Source: {metadata['source']}\n"
+            
+            chunk_text = f"--- Document {i+1} ---\n{source_info}\nContent:\n{chunk['content']}\n\n"
+            
+            # Check if adding this chunk would exceed the max length
+            if current_length + len(chunk_text) > max_context_length:
+                break
+            
+            context_parts.append(chunk_text)
+            current_length += len(chunk_text)
+        
+        return ''.join(context_parts)
+    
+    def generate_answer_with_web_search(self, query: str) -> Dict[str, Any]:
+        """
+        Generate answer using OpenAI's web search capability via Responses API
+        
+        Args:
+            query: User's question
+            
+        Returns:
+            Dictionary with answer and metadata
+        """
+        try:
+            logger.info(f"Using web search for query: '{query[:50]}...'")
+            
+            # Create a Polkadot-focused web search query
+            web_search_query = f"Polkadot blockchain {query}"
+            
+            # Use OpenAI Responses API with web search tool
+            tool = {
+                "type": "web_search_preview", 
+                "search_context_size": self.web_search_context_size
+            }
+            
+            # Add user location for better search results
+            user_location = {
+                "type": "approximate",
+                "country": "US",
+                "city": "San Francisco",
+                "timezone": "America/Los_Angeles"
+            }
+            tool["user_location"] = user_location
+            
+            response = self.client.responses.create(
+                model="gpt-4o",
+                tools=[tool],
+                input=web_search_query
+            )
+            
+            answer = response.output_text.strip()
+            
+            # Extract citations if available
+            sources = []
+            try:
+                if hasattr(response, 'output') and len(response.output) > 1:
+                    annotations = response.output[1].content[0].annotations
+                    if annotations:
+                        for ann in annotations:
+                            sources.append({
+                                'title': ann.title,
+                                'url': ann.url,
+                                'source_type': 'web_search',
+                                'similarity_score': 1.0
+                            })
+            except Exception as e:
+                logger.warning(f"Could not extract citations: {e}")
+                # Fallback source
+                sources = [{'title': 'Web Search Results', 'url': '', 'source_type': 'web_search', 'similarity_score': 1.0}]
+            
+            if not sources:
+                sources = [{'title': 'Web Search Results', 'url': '', 'source_type': 'web_search', 'similarity_score': 1.0}]
+            
+            return {
+                'answer': answer,
+                'sources': sources,
+                'confidence': 0.8,  # High confidence for web search results
+                'context_used': True,
+                'model_used': 'gpt-4o',
+                'chunks_used': 0,
+                'search_method': 'web_search'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error with web search: {e}")
+            return {
+                'answer': "I encountered an error while searching for information. Please try again or rephrase your question.",
+                'sources': [],
+                'confidence': 0.0,
+                'context_used': False,
+                'error': str(e),
+                'search_method': 'web_search_failed'
+            }
+    
+    def generate_answer(self, 
+                       query: str, 
+                       chunks: List[Dict[str, Any]], 
+                       custom_prompt: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Generate an answer based on the query and retrieved chunks, with web search fallback
+        
+        Args:
+            query: User's question
+            chunks: Retrieved document chunks
+            custom_prompt: Optional custom system prompt
+            
+        Returns:
+            Dictionary with answer, sources, and metadata
+        """
+        try:
+            # Create context from chunks
+            context = self.create_context_from_chunks(chunks)
+            
+            # Check if we have sufficient context
+            has_sufficient_context = (
+                context.strip() and 
+                len(chunks) > 0 and 
+                any(chunk.get('similarity_score', 0) > 0.3 for chunk in chunks)
+            )
+            
+            # If no sufficient context and web search is enabled, use web search
+            if not has_sufficient_context and self.enable_web_search:
+                logger.info("Insufficient local context, falling back to web search")
+                return self.generate_answer_with_web_search(query)
+            
+            # If no context at all, return appropriate message
+            if not context.strip():
+                return {
+                    'answer': "I couldn't find relevant information in the Polkadot knowledge base to answer your question. Please try rephrasing your query or ask about a different topic related to Polkadot.",
+                    'sources': [],
+                    'confidence': 0.0,
+                    'context_used': False,
+                    'search_method': 'local_only'
+                }
+            
+            # Create system prompt
+            system_prompt = custom_prompt or self._get_default_system_prompt()
+            
+            # Create user prompt with context and query
+            user_prompt = self._create_user_prompt(query, context)
+            
+            # Generate response using OpenAI
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=self.temperature,
+                max_tokens=self.max_tokens
+            )
+            
+            answer = response.choices[0].message.content.strip()
+            
+            # Extract sources from chunks
+            sources = self._extract_sources(chunks)
+            
+            # Estimate confidence based on number of chunks and similarity scores
+            confidence = self._estimate_confidence(chunks)
+            
+            result = {
+                'answer': answer,
+                'sources': sources,
+                'confidence': confidence,
+                'context_used': True,
+                'model_used': self.model,
+                'chunks_used': len(chunks),
+                'search_method': 'local_knowledge'
+            }
+            
+            logger.info(f"Generated answer for query: '{query[:50]}...' using {len(chunks)} chunks")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error generating answer: {e}")
+            
+            # If local generation fails and web search is enabled, try web search as fallback
+            if self.enable_web_search:
+                logger.info("Local generation failed, trying web search fallback")
+                return self.generate_answer_with_web_search(query)
+            
+            return {
+                'answer': "I encountered an error while generating the answer. Please try again.",
+                'sources': [],
+                'confidence': 0.0,
+                'context_used': False,
+                'error': str(e),
+                'search_method': 'error'
+            }
+    
+    def _get_default_system_prompt(self) -> str:
+        """Get the default system prompt for the QA system"""
+        return """You are a helpful AI assistant specialized in answering questions about Polkadot, the blockchain platform. 
+
+You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
+
+1. Base your answers primarily on the provided context
+2. If the context doesn't contain enough information, say so clearly
+3. Be accurate and specific, citing relevant details from the context
+4. Explain technical concepts in a clear and understandable way
+5. If you're uncertain about something, express that uncertainty
+6. Structure your response in a logical and easy-to-follow manner
+7. When mentioning specific features or processes, try to include relevant links or references if they're provided in the context
+
+Remember: Your goal is to provide helpful, accurate information about Polkadot based on the most current documentation available."""
+    
+    def _create_user_prompt(self, query: str, context: str) -> str:
+        """Create the user prompt with query and context"""
+        return f"""Context Information:
+{context}
+
+Question: {query}
+
+Please provide a comprehensive answer based on the context above. If the context doesn't contain sufficient information to fully answer the question, please indicate what information is missing."""
+    
+    def _extract_sources(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """Extract source information from chunks"""
+        sources = []
+        seen_urls = set()
+        
+        for chunk in chunks:
+            metadata = chunk.get('metadata', {})
+            
+            source = {
+                'title': metadata.get('title', 'Unknown Title'),
+                'url': metadata.get('url', ''),
+                'source_type': metadata.get('source', 'unknown'),
+                'similarity_score': chunk.get('similarity_score', 0.0)
+            }
+            
+            # Avoid duplicate URLs
+            if source['url'] and source['url'] not in seen_urls:
+                sources.append(source)
+                seen_urls.add(source['url'])
+            elif not source['url']:
+                sources.append(source)
+        
+        return sources
+    
+    def _estimate_confidence(self, chunks: List[Dict[str, Any]]) -> float:
+        """Estimate confidence based on chunks and similarity scores"""
+        if not chunks:
+            return 0.0
+        
+        # Base confidence on average similarity score and number of chunks
+        similarity_scores = [chunk.get('similarity_score', 0.0) for chunk in chunks]
+        avg_similarity = sum(similarity_scores) / len(similarity_scores)
+        
+        # Adjust confidence based on number of chunks (more chunks = higher confidence, up to a point)
+        chunk_bonus = min(len(chunks) * 0.1, 0.3)
+        
+        confidence = min(avg_similarity + chunk_bonus, 1.0)
+        return round(confidence, 2)
+    
+    def generate_summary(self, chunks: List[Dict[str, Any]]) -> str:
+        """Generate a summary of the retrieved chunks"""
+        try:
+            if not chunks:
+                return "No relevant information found."
+            
+            # Create a condensed context
+            context = self.create_context_from_chunks(chunks, max_context_length=2000)
+            
+            summary_prompt = """Please provide a brief summary of the following Polkadot-related information:
+
+{context}
+
+Summary:"""
+            
+            response = openai.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "user", "content": summary_prompt.format(context=context)}
+                ],
+                temperature=0.2,
+                max_tokens=300
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error generating summary: {e}")
+            return "Unable to generate summary." 
