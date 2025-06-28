@@ -11,7 +11,8 @@ class Config:
     OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-ada-002")
     
     # Web Search Configuration
-    ENABLE_WEB_SEARCH = os.getenv("ENABLE_WEB_SEARCH", "true").lower() == "true"
+    WEB_SEARCH = os.getenv("WEB_SEARCH", "true").lower() == "true"
+    ENABLE_WEB_SEARCH = WEB_SEARCH  # Alias for backward compatibility
     WEB_SEARCH_CONTEXT_SIZE = os.getenv("WEB_SEARCH_CONTEXT_SIZE", "high")  # low, medium, high
     SIMILARITY_THRESHOLD_FOR_WEB_SEARCH = float(os.getenv("SIMILARITY_THRESHOLD_FOR_WEB_SEARCH", 0.3))
     

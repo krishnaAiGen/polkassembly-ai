@@ -156,6 +156,104 @@ Answer the following Polkadot-related question concisely:"""
                 'search_method': 'web_search_failed'
             }
     
+    def _is_greeting_message(self, query: str) -> bool:
+        """
+        Check if the query is a greeting or introduction message
+        
+        Args:
+            query: User's question
+            
+        Returns:
+            True if it's a greeting message
+        """
+        greeting_keywords = [
+            'hi', 'hello', 'hey', 'greetings', 'good morning', 'good afternoon', 
+            'good evening', 'what\'s up', 'whats up', 'wassup', 'howdy',
+            'intro', 'introduction', 'who are you', 'what are you',
+            'what do you do', 'what is this', 'help', 'start'
+        ]
+        
+        query_lower = query.lower().strip()
+        
+        # Check for exact matches or if query starts with greeting
+        for keyword in greeting_keywords:
+            if query_lower == keyword or query_lower.startswith(keyword):
+                return True
+        
+        # Check for short queries that might be greetings
+        if len(query_lower.split()) <= 3:
+            for keyword in greeting_keywords:
+                if keyword in query_lower:
+                    return True
+        
+        return False
+    
+    def _get_polkassembly_introduction(self) -> Dict[str, Any]:
+        """
+        Generate introduction response about Polkassembly
+        
+        Returns:
+            Dictionary with introduction answer and metadata
+        """
+        introduction = """👋 **Hello! I'm the Polkassembly AI Assistant!**
+
+**What is Polkassembly?**
+Polkassembly is the leading governance platform for Polkadot and Kusama ecosystems, designed to make blockchain governance accessible and transparent.
+
+**🔗 Key Features:**
+• **Governance Tracking** - Monitor proposals, referenda, and voting
+• **Democracy Tools** - Participate in on-chain governance decisions  
+• **Analytics Dashboard** - View governance statistics and trends
+• **Community Hub** - Discuss proposals with other community members
+• **Voting Interface** - Easy-to-use voting tools for token holders
+
+**🌐 Useful Links:**
+• **Main Platform**: https://polkassembly.io
+• **Polkadot Governance**: https://polkadot.polkassembly.io
+• **Kusama Governance**: https://kusama.polkassembly.io
+• **Documentation**: https://docs.polkassembly.io
+• **GitHub**: https://github.com/Premiurly/polkassembly
+
+**💡 What can I help you with?**
+Ask me about Polkadot governance, parachains, staking, treasury proposals, referenda, or any other Polkadot/Kusama related topics!"""
+
+        sources = [
+            {
+                'title': 'Polkassembly Main Platform',
+                'url': 'https://polkassembly.io',
+                'source_type': 'platform',
+                'similarity_score': 1.0
+            },
+            {
+                'title': 'Polkadot Governance on Polkassembly',
+                'url': 'https://polkadot.polkassembly.io',
+                'source_type': 'platform',
+                'similarity_score': 1.0
+            },
+            {
+                'title': 'Kusama Governance on Polkassembly',
+                'url': 'https://kusama.polkassembly.io',
+                'source_type': 'platform',
+                'similarity_score': 1.0
+            },
+            {
+                'title': 'Polkassembly Documentation',
+                'url': 'https://docs.polkassembly.io',
+                'source_type': 'documentation',
+                'similarity_score': 1.0
+            }
+        ]
+
+        return {
+            'answer': introduction,
+            'sources': sources,
+            'confidence': 1.0,
+            'context_used': True,
+            'model_used': 'polkassembly_intro',
+            'chunks_used': 0,
+            'search_method': 'greeting_response'
+        }
+
     def generate_answer(self, 
                        query: str, 
                        chunks: List[Dict[str, Any]], 
@@ -172,6 +270,11 @@ Answer the following Polkadot-related question concisely:"""
             Dictionary with answer, sources, and metadata
         """
         try:
+            # Check if this is a greeting message
+            if self._is_greeting_message(query):
+                logger.info("Detected greeting message, providing Polkassembly introduction")
+                return self._get_polkassembly_introduction()
+            
             # Create context from chunks
             context = self.create_context_from_chunks(chunks)
             
@@ -189,13 +292,23 @@ Answer the following Polkadot-related question concisely:"""
             
             # If no context at all, return appropriate message
             if not context.strip():
-                return {
-                    'answer': "I couldn't find relevant information in the Polkadot knowledge base to answer your question. Please try rephrasing your query or ask about a different topic related to Polkadot.",
-                    'sources': [],
-                    'confidence': 0.0,
-                    'context_used': False,
-                    'search_method': 'local_only'
-                }
+                if self.enable_web_search:
+                    # This shouldn't happen since we would have used web search above
+                    return {
+                        'answer': "I couldn't find relevant information in the Polkadot knowledge base to answer your question. Please try rephrasing your query or ask about a different topic related to Polkadot.",
+                        'sources': [],
+                        'confidence': 0.0,
+                        'context_used': False,
+                        'search_method': 'local_only'
+                    }
+                else:
+                    return {
+                        'answer': "I could not find sufficient information about the query.",
+                        'sources': [],
+                        'confidence': 0.0,
+                        'context_used': False,
+                        'search_method': 'local_only'
+                    }
             
             # Create system prompt
             system_prompt = custom_prompt or self._get_default_system_prompt()
