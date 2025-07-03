@@ -70,6 +70,7 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[Source]
     confidence: float
+    follow_up_questions: List[str]
     context_used: bool
     model_used: str
     chunks_used: int
@@ -133,7 +134,8 @@ async def startup_event():
             model=Config.OPENAI_MODEL,
             temperature=0.1,
             enable_web_search=Config.ENABLE_WEB_SEARCH,
-            web_search_context_size=Config.WEB_SEARCH_CONTEXT_SIZE
+            web_search_context_size=Config.WEB_SEARCH_CONTEXT_SIZE,
+            enable_memory=bool(Config.MEM0_API_KEY)  # Enable memory only if API key is provided
         )
         
         logger.info("API startup completed successfully")
@@ -181,10 +183,18 @@ async def query_chatbot(request: QueryRequest):
         )
         
         if not chunks:
+            # Generate fallback follow-up questions when no results found
+            fallback_questions = [
+                "How does Polkadot differ from other blockchains?",
+                "What are the main benefits of using Polkadot?", 
+                "How can I get started with Polkadot?"
+            ]
+            
             return QueryResponse(
                 answer="I couldn't find relevant information to answer your question. Please try rephrasing your query or ask about a different topic.",
                 sources=[],
                 confidence=0.0,
+                follow_up_questions=fallback_questions,
                 context_used=False,
                 model_used=Config.OPENAI_MODEL,
                 chunks_used=0,
@@ -221,6 +231,7 @@ async def query_chatbot(request: QueryRequest):
             answer=qa_result['answer'],
             sources=sources,
             confidence=qa_result.get('confidence', 0.0),
+            follow_up_questions=qa_result.get('follow_up_questions', []),
             context_used=qa_result.get('context_used', False),
             model_used=qa_result.get('model_used', Config.OPENAI_MODEL),
             chunks_used=qa_result.get('chunks_used', 0),

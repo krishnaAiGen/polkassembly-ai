@@ -11,6 +11,9 @@ chroma_db/
 *.sqlite3
 *.db
 
+#zip files
+*.zip
+
 # Data files and directories
 data/
 *.json
