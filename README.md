@@ -84,11 +84,28 @@ python run_server.py
 uvicorn src.rag.api_server:app --host 0.0.0.0 --port 8000
 ```
 
-### 5. Test the System
+### 5. (Optional) Configure Memory
+
+To enable conversation memory with Mem0:
 
 ```bash
-# Run the test script
+# Install mem0 package
+pip install mem0ai
+
+# Add your Mem0 API key to .env file
+echo "MEM0_API_KEY=your_mem0_api_key_here" >> .env
+```
+
+### 6. Test the System
+
+```bash
+# Run all tests
 python run_tests.py
+
+# Run specific tests
+python run_tests.py --api        # API functionality only
+python run_tests.py --memory     # Memory integration only
+python run_tests.py --formatting # Clean formatting validation
 ```
 
 ## API Endpoints
@@ -126,6 +143,31 @@ Content-Type: application/json
 ### 📊 Get Statistics
 ```http
 GET /stats
+```
+
+## 🧠 Memory Integration
+
+The system includes **conversation memory** powered by Mem0, enabling context-aware conversations:
+
+### Features
+- **Context Retention**: Remembers previous questions and answers
+- **Smart Follow-ups**: Uses conversation history for better responses
+- **Automatic Memory**: No manual memory management required
+- **Privacy**: Isolated memory per user session
+
+### Memory Flow
+1. **User Query**: System searches memory for relevant context
+2. **Context Injection**: Memory context is added to prompt
+3. **Response Generation**: AI considers both documents and memory
+4. **Memory Storage**: Query and response are automatically stored
+
+### Example Conversation
+```
+User: "What is staking in Polkadot?"
+Bot: "Staking in Polkadot allows DOT holders to..."
+
+User: "What are the rewards for that?"
+Bot: "Staking rewards in Polkadot include..." # Uses memory context
 ```
 
 ## Usage Examples
@@ -179,6 +221,9 @@ curl -X POST "http://localhost:8000/search" \
 | `OPENAI_API_KEY` | - | Your OpenAI API key (required) |
 | `OPENAI_MODEL` | gpt-3.5-turbo | OpenAI model for answers |
 | `OPENAI_EMBEDDING_MODEL` | text-embedding-ada-002 | Embedding model |
+| `MEM0_API_KEY` | - | Mem0 API key for conversation memory (optional) |
+| `WEB_SEARCH` | true | Enable web search fallback |
+| `WEB_SEARCH_CONTEXT_SIZE` | high | Web search context size (low/medium/high) |
 | `CHROMA_PERSIST_DIRECTORY` | ./chroma_db | ChromaDB storage path |
 | `CHROMA_COLLECTION_NAME` | polkadot_embeddings | Collection name |
 | `API_HOST` | 0.0.0.0 | API server host |
