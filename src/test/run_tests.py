@@ -7,9 +7,9 @@ import os
 import sys
 import argparse
 
-# Add src to path
-src_path = os.path.join(os.path.dirname(__file__), 'src')
-sys.path.insert(0, src_path)
+# Add project root to path (go up two levels from src/test/)
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, project_root)
 
 def run_api_tests():
     """Run basic API functionality tests"""
@@ -29,12 +29,19 @@ def run_formatting_tests():
     from src.test.test_formatting import main as formatting_main
     formatting_main()
 
+def run_rate_limit_tests():
+    """Run rate limiting tests"""
+    print("\n🔐 Running Rate Limit Tests...")
+    from src.test.test_rate_limit import main as rate_limit_main
+    rate_limit_main()
+
 def main():
     """Main test runner with options"""
     parser = argparse.ArgumentParser(description='Run Polkadot AI Chatbot tests')
     parser.add_argument('--api', action='store_true', help='Run API tests only')
     parser.add_argument('--memory', action='store_true', help='Run memory tests only')
     parser.add_argument('--formatting', action='store_true', help='Run formatting tests only')
+    parser.add_argument('--rate-limit', action='store_true', help='Run rate limiting tests only')
     parser.add_argument('--all', action='store_true', default=True, help='Run all tests (default)')
     
     args = parser.parse_args()
@@ -43,7 +50,7 @@ def main():
     print("=" * 50)
     
     # Determine which tests to run
-    run_all = args.all and not any([args.api, args.memory, args.formatting])
+    run_all = args.all and not any([args.api, args.memory, args.formatting, getattr(args, 'rate_limit', False)])
     
     if args.api or run_all:
         run_api_tests()
@@ -54,10 +61,15 @@ def main():
     if args.formatting or run_all:
         run_formatting_tests()
     
+    if getattr(args, 'rate_limit', False) or run_all:
+        run_rate_limit_tests()
+    
     print("\n" + "=" * 50)
     print("✅ Test suite completed!")
     print("\nNote: Make sure the API server is running on localhost:8000")
     print("Run with: python run_server.py")
+    print("\nFor rate limiting tests, also ensure Redis is running:")
+    print("Run with: redis-server")
 
 if __name__ == "__main__":
     main() 
