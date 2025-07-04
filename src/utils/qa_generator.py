@@ -74,7 +74,7 @@ class QAGenerator:
         
         return ''.join(context_parts)
     
-    def generate_answer_with_web_search(self, query: str) -> Dict[str, Any]:
+    def generate_answer_with_web_search(self, query: str, user_id: str = "default_user") -> Dict[str, Any]:
         """
         Generate answer using OpenAI's web search capability via Responses API
         
@@ -89,8 +89,8 @@ class QAGenerator:
             
             # Get memory context and add query to memory if memory is enabled
             if self.memory_manager and self.memory_manager.enabled:
-                self.memory_manager.get_memory_context(query)
-                self.memory_manager.add_user_query(query)
+                self.memory_manager.get_memory_context(query, user_id)
+                self.memory_manager.add_user_query(query, user_id)
             
             # Create a Polkadot-focused web search query
             web_search_query = f"Polkadot blockchain {query}"
@@ -149,7 +149,7 @@ Answer the following Polkadot-related question in clean, professional text forma
             
             # Add assistant response to memory if memory is enabled
             if self.memory_manager and self.memory_manager.enabled:
-                self.memory_manager.add_assistant_response(answer)
+                self.memory_manager.add_assistant_response(answer, user_id)
             
             # Extract citations if available
             sources = []
@@ -307,7 +307,8 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
     def generate_answer(self, 
                        query: str, 
                        chunks: List[Dict[str, Any]], 
-                       custom_prompt: Optional[str] = None) -> Dict[str, Any]:
+                       custom_prompt: Optional[str] = None,
+                       user_id: str = "default_user") -> Dict[str, Any]:
         """
         Generate an answer based on the query and retrieved chunks, with web search fallback
         
@@ -326,13 +327,13 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
                 
                 # Handle memory for greeting
                 if self.memory_manager and self.memory_manager.enabled:
-                    self.memory_manager.add_user_query(query)
+                    self.memory_manager.add_user_query(query, user_id)
                 
                 greeting_response = self._get_polkassembly_introduction()
                 
                 # Add greeting response to memory
                 if self.memory_manager and self.memory_manager.enabled:
-                    self.memory_manager.add_assistant_response(greeting_response['answer'])
+                    self.memory_manager.add_assistant_response(greeting_response['answer'], user_id)
                 
                 return greeting_response
             
@@ -374,9 +375,9 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
             # Get memory context if memory is enabled
             memory_context = ""
             if self.memory_manager and self.memory_manager.enabled:
-                memory_context = self.memory_manager.get_memory_context(query)
+                memory_context = self.memory_manager.get_memory_context(query, user_id)
                 # Add user query to memory
-                self.memory_manager.add_user_query(query)
+                self.memory_manager.add_user_query(query, user_id)
             
             # Create system prompt
             system_prompt = custom_prompt or self._get_default_system_prompt()
@@ -399,7 +400,7 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
             
             # Add assistant response to memory if memory is enabled
             if self.memory_manager and self.memory_manager.enabled:
-                self.memory_manager.add_assistant_response(answer)
+                self.memory_manager.add_assistant_response(answer, user_id)
             
             # Extract sources from chunks
             sources = self._extract_sources(chunks)
@@ -430,7 +431,7 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
             # If local generation fails and web search is enabled, try web search as fallback
             if self.enable_web_search:
                 logger.info("Local generation failed, trying web search fallback")
-                return self.generate_answer_with_web_search(query)
+                return self.generate_answer_with_web_search(query, user_id)
             
             return {
                 'answer': "I encountered an error while generating the answer. Please try again.",
@@ -438,7 +439,8 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
                 'confidence': 0.0,
                 'follow_up_questions': self._get_fallback_follow_ups(query),
                 'context_used': False,
-                'error': str(e),
+                'model_used': self.model,
+                'chunks_used': 0,
                 'search_method': 'error'
             }
     
