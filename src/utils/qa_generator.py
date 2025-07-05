@@ -3,6 +3,7 @@ import logging
 from typing import List, Dict, Any, Optional
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
+from .content_guardrails import get_guardrails
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +30,10 @@ class QAGenerator:
         
         # Initialize OpenAI client
         self.client = openai.OpenAI(api_key=self.openai_api_key)
+        
+        # Initialize enhanced guardrails
+        self.guardrails = get_guardrails(openai_api_key)
+        logger.info("Enhanced AI-powered guardrails initialized")
         
         # Initialize memory manager
         self.memory_manager = get_memory_manager() if enable_memory else None
@@ -108,7 +113,7 @@ class QAGenerator:
                 "city": "San Francisco",
                 "timezone": "America/Los_Angeles"
             }
-            tool["user_location"] = user_location
+            tool["user_location"] = user_location  # type: ignore
             
             # Add system instructions for summarized responses
             system_instruction = """You are a helpful AI assistant specialized in answering questions about Polkadot, the blockchain platform. 
@@ -146,6 +151,9 @@ Answer the following Polkadot-related question in clean, professional text forma
             )
             
             answer = response.output_text.strip()
+            
+            # 🛡️ Sanitize the web search response
+            answer = self.guardrails.sanitize_response(answer)
             
             # Add assistant response to memory if memory is enabled
             if self.memory_manager and self.memory_manager.enabled:
@@ -320,6 +328,22 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
             Dictionary with answer, sources, and metadata
         """
         try:
+            # 🛡️ AI-powered content moderation
+            is_safe, category, helpful_response = self.guardrails.moderate_content(query)
+            
+            if not is_safe:
+                logger.warning(f"Unsafe query detected - Category: {category}")
+                return {
+                    'answer': helpful_response,
+                    'sources': [],
+                    'confidence': 0.0,
+                    'follow_up_questions': self._get_helpful_follow_ups(),
+                    'context_used': False,
+                    'model_used': self.model,
+                    'chunks_used': 0,
+                    'search_method': f'blocked_{category}'
+                }
+            
             # Check if this is a greeting message
             if self._is_greeting_message(query):
                 logger.info("Detected greeting message, providing Polkassembly introduction")
@@ -396,6 +420,9 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
             )
             
             answer = response.choices[0].message.content.strip()
+            
+            # 🛡️ Sanitize the AI response
+            answer = self.guardrails.sanitize_response(answer)
             
             # Add assistant response to memory if memory is enabled
             if self.memory_manager and self.memory_manager.enabled:
@@ -510,14 +537,14 @@ Remember: Answer as if you have direct expertise about Polkadot. Provide helpful
         return "\n\n".join(prompt_parts)
     
     def _extract_sources(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        """Extract source information from chunks, limited to top 2-3 most relevant"""
+        """Extract and filter source information from chunks"""
         sources = []
         seen_urls = set()
         
-        # Sort chunks by similarity score and take top 3
+        # Sort chunks by similarity score
         sorted_chunks = sorted(chunks, key=lambda x: x.get('similarity_score', 0), reverse=True)
         
-        for chunk in sorted_chunks[:3]:  # Limit to top 3 sources
+        for chunk in sorted_chunks[:3]:
             metadata = chunk.get('metadata', {})
             
             source = {
@@ -527,18 +554,19 @@ Remember: Answer as if you have direct expertise about Polkadot. Provide helpful
                 'similarity_score': chunk.get('similarity_score', 0.0)
             }
             
-            # Avoid duplicate URLs
             if source['url'] and source['url'] not in seen_urls:
                 sources.append(source)
                 seen_urls.add(source['url'])
-            elif not source['url'] and len(sources) < 2:  # Only add non-URL sources if we have less than 2
+            elif not source['url'] and len(sources) < 2:
                 sources.append(source)
             
-            # Stop if we have 2-3 good sources
             if len(sources) >= 2 and any(s['url'] for s in sources):
                 break
         
-        return sources[:3]  # Ensure maximum 3 sources
+        # 🛡️ Apply guardrails to filter sources (removes subsquare, prioritizes preferred)
+        filtered_sources = self.guardrails.filter_sources(sources)
+        
+        return filtered_sources
     
     def _estimate_confidence(self, chunks: List[Dict[str, Any]]) -> float:
         """Estimate confidence based on chunks and similarity scores"""
@@ -663,6 +691,20 @@ Format: Return only the 3 questions, one per line, without numbers or bullets.""
             logger.warning(f"Error generating follow-up questions: {e}")
             return self._get_fallback_follow_ups(query)
     
+    def _get_helpful_follow_ups(self) -> List[str]:
+        """Get helpful follow-up questions that guide users to appropriate topics"""
+        helpful_questions = [
+            "How does Polkadot's governance system work?",
+            "What are the benefits of staking DOT tokens?",
+            "How do parachains communicate with each other?",
+            "What makes Polkadot different from other blockchains?",
+            "How can I participate in Polkadot governance?",
+            "What are the risks and rewards of DOT staking?",
+        ]
+        
+        import random
+        return random.sample(helpful_questions, 3)
+
     def _get_fallback_follow_ups(self, query: str) -> List[str]:
         """
         Get fallback follow-up questions based on common Polkadot topics

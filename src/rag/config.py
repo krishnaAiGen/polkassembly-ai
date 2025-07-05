@@ -40,6 +40,15 @@ class Config:
     POLKADOT_NETWORK_PATH = os.path.join(DATA_SOURCES_PATH, "polkadot_network")
     POLKADOT_WIKI_PATH = os.path.join(DATA_SOURCES_PATH, "polkadot_wiki")
     
+    # Content Guardrails Configuration
+    ENABLE_CONTENT_FILTERING = os.getenv("ENABLE_CONTENT_FILTERING", "true").lower() == "true"
+    BLOCKED_DOMAINS = os.getenv("BLOCKED_DOMAINS", "subsquare.io,subsquare.com,subsquare.network").split(",")
+    PREFERRED_DOMAINS = os.getenv("PREFERRED_DOMAINS", "polkadot.io,polkadot.network,polkassembly.io").split(",")
+    
+    # Safety Settings
+    MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", 500))
+    ENABLE_OFFENSIVE_FILTER = os.getenv("ENABLE_OFFENSIVE_FILTER", "true").lower() == "true"
+    
     @classmethod
     def validate_config(cls):
         """Validate that required configuration is present"""
