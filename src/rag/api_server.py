@@ -9,6 +9,7 @@ import sys
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +25,7 @@ from .config import Config
 from ..utils.embeddings import EmbeddingManager
 from ..utils.qa_generator import QAGenerator
 from ..utils.content_guardrails import get_guardrails
+from ..utils.rate_limiter import check_rate_limit, get_client_stats
 
 # Configure logging
 logging.basicConfig(
@@ -32,78 +34,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="Polkadot AI Chatbot API",
-    description="AI-powered chatbot for Polkadot ecosystem questions",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Global components
 embedding_manager: Optional[EmbeddingManager] = None
 qa_generator: Optional[QAGenerator] = None
 content_guardrails = None
 
-# Request/Response models
-class QueryRequest(BaseModel):
-    question: str = Field(..., description="The question to ask", min_length=1, max_length=500)
-    max_chunks: int = Field(default=5, description="Maximum number of chunks to retrieve", ge=1, le=10)
-    include_sources: bool = Field(default=True, description="Whether to include source information")
-    custom_prompt: Optional[str] = Field(default=None, description="Custom system prompt for the AI")
-
-class Source(BaseModel):
-    title: str
-    url: str
-    source_type: str
-    similarity_score: float
-
-class QueryResponse(BaseModel):
-    answer: str
-    sources: List[Source]
-    confidence: float
-    follow_up_questions: List[str]
-    context_used: bool
-    model_used: str
-    chunks_used: int
-    processing_time_ms: float
-    timestamp: str
-    search_method: Optional[str] = Field(default=None, description="Method used for search (local_knowledge, web_search, etc.)")
-
-class HealthResponse(BaseModel):
-    status: str
-    collection_stats: Dict[str, Any]
-    timestamp: str
-
-class SearchRequest(BaseModel):
-    query: str = Field(..., description="Search query", min_length=1, max_length=200)
-    n_results: int = Field(default=5, description="Number of results to return", ge=1, le=20)
-    source_filter: Optional[str] = Field(default=None, description="Filter by source type")
-
-class SearchResult(BaseModel):
-    content: str
-    metadata: Dict[str, Any]
-    similarity_score: float
-
-class SearchResponse(BaseModel):
-    results: List[SearchResult]
-    total_results: int
-    processing_time_ms: float
-    timestamp: str
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the application components"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
     global embedding_manager, qa_generator, content_guardrails
     
     try:
@@ -149,6 +88,82 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to initialize API: {e}")
         raise e
+    
+    # Application is now ready
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Polkadot AI Chatbot API...")
+
+# Initialize FastAPI app (after lifespan function is defined)
+app = FastAPI(
+    title="Polkadot AI Chatbot API",
+    description="AI-powered chatbot for Polkadot ecosystem questions",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Request/Response models
+class QueryRequest(BaseModel):
+    question: str = Field(..., description="The question to ask", min_length=1, max_length=500)
+    user_id: str = Field(..., description="Unique user identifier", min_length=1, max_length=100)
+    client_ip: str = Field(..., description="Client IP address", min_length=7, max_length=45)
+    max_chunks: int = Field(default=5, description="Maximum number of chunks to retrieve", ge=1, le=10)
+    include_sources: bool = Field(default=True, description="Whether to include source information")
+    custom_prompt: Optional[str] = Field(default=None, description="Custom system prompt for the AI")
+
+class Source(BaseModel):
+    title: str
+    url: str
+    source_type: str
+    similarity_score: float
+
+class QueryResponse(BaseModel):
+    answer: str
+    sources: List[Source]
+    follow_up_questions: List[str]
+    remaining_requests: int = Field(..., description="Number of remaining requests for this user")
+    confidence: float = Field(..., description="Confidence score of the answer")
+    context_used: bool = Field(..., description="Whether context was used")
+    model_used: str = Field(..., description="AI model used")
+    chunks_used: int = Field(..., description="Number of chunks used")
+    processing_time_ms: float = Field(..., description="Processing time in milliseconds")
+    timestamp: str = Field(..., description="Response timestamp")
+    search_method: str = Field(..., description="Method used for search")
+
+class HealthResponse(BaseModel):
+    status: str
+    collection_stats: Dict[str, Any]
+    timestamp: str
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., description="Search query", min_length=1, max_length=200)
+    n_results: int = Field(default=5, description="Number of results to return", ge=1, le=20)
+    source_filter: Optional[str] = Field(default=None, description="Filter by source type")
+
+class SearchResult(BaseModel):
+    content: str
+    metadata: Dict[str, Any]
+    similarity_score: float
+
+class SearchResponse(BaseModel):
+    results: List[SearchResult]
+    total_results: int
+    processing_time_ms: float
+    timestamp: str
+
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -170,7 +185,7 @@ async def health_check():
 
 @app.post("/query", response_model=QueryResponse)
 async def query_chatbot(request: QueryRequest):
-    """Main chatbot query endpoint with enhanced guardrails"""
+    """Main chatbot query endpoint with enhanced guardrails and rate limiting"""
     start_time = datetime.now()
     
     try:
@@ -180,6 +195,17 @@ async def query_chatbot(request: QueryRequest):
         if not embedding_manager.collection_exists():
             raise HTTPException(status_code=503, detail="No data available. Please create embeddings first.")
         
+        # Check rate limit using user_id as primary identifier
+        is_allowed, remaining_requests = check_rate_limit(request.user_id)
+        
+        if not is_allowed:
+            # Rate limit exceeded
+            logger.warning(f"Rate limit exceeded for user {request.user_id} from IP {request.client_ip}")
+            raise HTTPException(
+                status_code=429, 
+                detail="Rate limit exceeded. Please try again later."
+            )
+        
         # 🛡️ AI-powered content moderation
         is_safe, category, helpful_response = content_guardrails.moderate_content(request.question)
         
@@ -188,12 +214,13 @@ async def query_chatbot(request: QueryRequest):
             return QueryResponse(
                 answer=helpful_response,
                 sources=[],
-                confidence=0.0,
                 follow_up_questions=[
                     "How does Polkadot's governance system work?",
                     "What are the benefits of staking DOT tokens?",
                     "How do parachains communicate with each other?"
                 ],
+                remaining_requests=remaining_requests,
+                confidence=0.0,
                 context_used=False,
                 model_used=Config.OPENAI_MODEL,
                 chunks_used=0,
@@ -202,7 +229,7 @@ async def query_chatbot(request: QueryRequest):
                 search_method=f"blocked_{category}"
             )
         
-        logger.info(f"Processing query: '{request.question[:50]}...'")
+        logger.info(f"Processing query from user {request.user_id}: '{request.question[:50]}...' (remaining: {remaining_requests})")
         
         # Search for relevant chunks
         chunks = embedding_manager.search_similar_chunks(
@@ -218,15 +245,18 @@ async def query_chatbot(request: QueryRequest):
                 "How can I get started with Polkadot?"
             ]
             
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
             return QueryResponse(
                 answer="I couldn't find relevant information to answer your question. Please try rephrasing your query or ask about a different topic.",
                 sources=[],
-                confidence=0.0,
                 follow_up_questions=fallback_questions,
+                remaining_requests=remaining_requests,
+                confidence=0.0,
                 context_used=False,
                 model_used=Config.OPENAI_MODEL,
                 chunks_used=0,
-                processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
+                processing_time_ms=processing_time,
                 timestamp=datetime.now().isoformat(),
                 search_method="no_results"
             )
@@ -235,7 +265,8 @@ async def query_chatbot(request: QueryRequest):
         qa_result = qa_generator.generate_answer(
             query=request.question,
             chunks=chunks,
-            custom_prompt=request.custom_prompt
+            custom_prompt=request.custom_prompt,
+            user_id=request.user_id
         )
         
         # Format sources if requested
@@ -253,13 +284,14 @@ async def query_chatbot(request: QueryRequest):
         
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         
-        logger.info(f"Query processed in {processing_time:.2f}ms")
+        logger.info(f"Query processed in {processing_time:.2f}ms for user {request.user_id} (remaining: {remaining_requests})")
         
         return QueryResponse(
             answer=qa_result['answer'],
             sources=sources,
-            confidence=qa_result.get('confidence', 0.0),
             follow_up_questions=qa_result.get('follow_up_questions', []),
+            remaining_requests=remaining_requests,
+            confidence=qa_result.get('confidence', 0.0),
             context_used=qa_result.get('context_used', False),
             model_used=qa_result.get('model_used', Config.OPENAI_MODEL),
             chunks_used=qa_result.get('chunks_used', 0),
@@ -270,16 +302,23 @@ async def query_chatbot(request: QueryRequest):
         
     except Exception as e:
         logger.error(f"Error processing query: {e}")
+        # Try to get remaining requests if possible, otherwise default to 0
+        try:
+            _, remaining_requests = check_rate_limit(request.user_id)
+        except:
+            remaining_requests = 0
+        
         # Return helpful response even on error
         return QueryResponse(
             answer="I'd be happy to help you with Polkadot questions! What would you like to know about governance, staking, or parachains?",
             sources=[],
-            confidence=0.0,
             follow_up_questions=[
                 "How does Polkadot's governance system work?",
                 "What are the benefits of staking DOT tokens?",
                 "How do parachains communicate with each other?"
             ],
+            remaining_requests=remaining_requests,
+            confidence=0.0,
             context_used=False,
             model_used=Config.OPENAI_MODEL,
             chunks_used=0,
@@ -354,6 +393,21 @@ async def get_collection_stats():
         
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/rate-limit/{user_id}")
+async def get_rate_limit_status(user_id: str):
+    """Get rate limit status for a user"""
+    try:
+        stats = get_client_stats(user_id)
+        return {
+            "user_id": user_id,
+            "rate_limit_stats": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting rate limit stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")

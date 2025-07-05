@@ -11,6 +11,9 @@ An AI-powered chatbot system that provides intelligent answers about the Polkado
 - 💾 **Persistent Storage**: ChromaDB for efficient vector storage
 - 🔧 **Configurable**: Environment-based configuration
 - 📊 **Analytics**: Built-in statistics and monitoring
+- 🚀 **Production Ready**: Gunicorn with multiple workers for scalability
+- 🔄 **Easy Management**: Startup/stop scripts for complete system management
+- 📝 **Comprehensive Logging**: Separate log files for each service component
 
 ## Project Structure
 
@@ -19,6 +22,8 @@ polkassembly-ai/
 ├── README.md                  # Project documentation
 ├── env.example                # Environment variables template
 ├── requirements.txt           # Python dependencies
+├── start_pa_ai.sh            # Startup script (Redis + API with Gunicorn)
+├── stop_pa_ai.sh             # Stop script for all services
 ├── create_embeddings.py       # Entry point to generate embeddings (run once)
 ├── run_server.py              # Entry point for API server
 ├── run_tests.py               # Entry point for testing
@@ -46,7 +51,7 @@ polkassembly-ai/
 
 ```bash
 # Install dependencies
-pip install -r requirements.txt
+pip install fastapi uvicorn openai chromadb python-dotenv tiktoken mem0ai redis python-redis-rate-limit
 ```
 
 ### 2. Environment Configuration
@@ -76,12 +81,31 @@ python create_embeddings.py --batch-size 25 --min-tokens 100 --max-tokens 800
 
 ### 4. Start the API Server
 
+#### Option A: Using the Startup Script (Recommended)
+```bash
+# Make scripts executable (first time only)
+chmod +x start_pa_ai.sh stop_pa_ai.sh
+
+# Start the complete system (Redis + API with Gunicorn)
+./start_pa_ai.sh
+
+# Stop the system
+./stop_pa_ai.sh
+
+# Check system status
+./stop_pa_ai.sh status
+```
+
+#### Option B: Manual Startup
 ```bash
 # Start the FastAPI server
 python run_server.py
 
 # Or using uvicorn directly
 uvicorn src.rag.api_server:app --host 0.0.0.0 --port 8000
+
+# Or using gunicorn with multiple workers
+gunicorn --bind 0.0.0.0:8000 --workers 3 --worker-class uvicorn.workers.UvicornWorker src.rag.api_server:app
 ```
 
 ### 5. (Optional) Configure Memory
@@ -96,16 +120,39 @@ pip install mem0ai
 echo "MEM0_API_KEY=your_mem0_api_key_here" >> .env
 ```
 
-### 6. Test the System
+### 6. (Optional) Configure Rate Limiting
+
+To enable Redis-based rate limiting:
+
+```bash
+# Install and start Redis server
+# On macOS:
+brew install redis
+brew services start redis
+
+# On Ubuntu/Debian:
+sudo apt-get install redis-server
+sudo systemctl start redis-server
+
+# On CentOS/RHEL:
+sudo yum install redis
+sudo systemctl start redis
+
+# Test Redis connection
+redis-cli ping  # Should return "PONG"
+```
+
+### 7. Test the System
 
 ```bash
 # Run all tests
-python run_tests.py
+python src/test/run_tests.py
 
 # Run specific tests
-python run_tests.py --api        # API functionality only
-python run_tests.py --memory     # Memory integration only
-python run_tests.py --formatting # Clean formatting validation
+python src/test/run_tests.py --api         # API functionality only
+python src/test/run_tests.py --memory      # Memory integration only
+python src/test/run_tests.py --formatting  # Clean formatting validation
+python src/test/run_tests.py --rate-limit  # Rate limiting functionality
 ```
 
 ## API Endpoints
@@ -122,9 +169,21 @@ Content-Type: application/json
 
 {
   "question": "What is Polkadot?",
+  "user_id": "krishna",
+  "client_ip": "192.168.1.1",
   "max_chunks": 5,
   "include_sources": true,
   "custom_prompt": "optional custom system prompt"
+}
+```
+
+**Response:**
+```json
+{
+  "answer": "Polkadot is a blockchain protocol...",
+  "sources": [...],
+  "follow_up_questions": ["...", "...", "..."],
+  "remaining_requests": 7
 }
 ```
 
@@ -143,6 +202,33 @@ Content-Type: application/json
 ### 📊 Get Statistics
 ```http
 GET /stats
+```
+
+### 🔐 Rate Limiting
+
+The API implements Redis-based rate limiting to prevent abuse:
+
+- **Default Limits**: 20 requests per hour per user_id
+- **Rate Limit Response**: HTTP 429 when limit exceeded
+- **Per-User Tracking**: Each user_id has separate rate limits
+- **Automatic Reset**: Limits reset after time window expires
+
+**Check Rate Limit Status:**
+```http
+GET /rate-limit/{user_id}
+```
+
+**Response:**
+```json
+{
+  "user_id": "krishna",
+  "rate_limit_stats": {
+    "max_requests": 20,
+    "used_requests": 13,
+    "remaining_requests": 7,
+    "time_window_seconds": 3600
+  }
+}
 ```
 
 ## 🧠 Memory Integration
@@ -180,14 +266,17 @@ import requests
 # Ask a question
 response = requests.post("http://localhost:8000/query", json={
     "question": "How do I stake DOT tokens?",
+    "user_id": "test_user",
+    "client_ip": "192.168.1.1",
     "max_chunks": 3,
     "include_sources": True
 })
 
 data = response.json()
 print(f"Answer: {data['answer']}")
-print(f"Confidence: {data['confidence']}")
+print(f"Remaining requests: {data['remaining_requests']}")
 print(f"Sources: {len(data['sources'])}")
+print(f"Follow-up questions: {data['follow_up_questions']}")
 ```
 
 ### cURL Examples
@@ -201,6 +290,8 @@ curl -X POST "http://localhost:8000/query" \
   -H "Content-Type: application/json" \
   -d '{
     "question": "What are parachains?",
+    "user_id": "curl_user",
+    "client_ip": "192.168.1.1",
     "max_chunks": 3,
     "include_sources": true
   }'
@@ -214,6 +305,54 @@ curl -X POST "http://localhost:8000/search" \
   }'
 ```
 
+## 🚀 Startup Scripts
+
+The project includes comprehensive startup and stop scripts for easy system management:
+
+### `start_pa_ai.sh` - System Startup
+Automatically starts both Redis and the API server with optimal production settings:
+
+**Features:**
+- ✅ **Redis Server**: Starts Redis with proper configuration
+- ✅ **Gunicorn Workers**: Runs API with 3 worker processes for scalability
+- ✅ **Process Management**: Tracks PIDs for proper shutdown
+- ✅ **Health Checks**: Verifies services are running correctly
+- ✅ **Comprehensive Logging**: Separate log files for each component
+- ✅ **Error Handling**: Graceful error handling and recovery
+
+**Configuration (via environment variables):**
+```bash
+export API_HOST="0.0.0.0"      # API server host
+export API_PORT="8000"         # API server port
+export WORKERS="3"             # Number of Gunicorn workers
+export REDIS_HOST="localhost"  # Redis host
+export REDIS_PORT="6379"       # Redis port
+```
+
+### `stop_pa_ai.sh` - System Shutdown
+Gracefully stops all services with multiple options:
+
+**Usage:**
+```bash
+./stop_pa_ai.sh              # Graceful shutdown
+./stop_pa_ai.sh force        # Force stop all processes
+./stop_pa_ai.sh cleanup      # Stop and clean up PID files
+./stop_pa_ai.sh status       # Show current system status
+./stop_pa_ai.sh help         # Show help information
+```
+
+### Log Files
+The startup script creates organized log files:
+- `logs/redis.log` - Redis server logs
+- `logs/api_server.log` - API server logs
+- `logs/api_server_error.log` - API error logs
+- `logs/access.log` - HTTP access logs
+
+### Process Management
+- PID files stored in `pids/` directory
+- Automatic process detection and cleanup
+- Graceful shutdown with timeout handling
+
 ## Configuration Options
 
 | Variable | Default | Description |
@@ -222,6 +361,11 @@ curl -X POST "http://localhost:8000/search" \
 | `OPENAI_MODEL` | gpt-3.5-turbo | OpenAI model for answers |
 | `OPENAI_EMBEDDING_MODEL` | text-embedding-ada-002 | Embedding model |
 | `MEM0_API_KEY` | - | Mem0 API key for conversation memory (optional) |
+| `REDIS_HOST` | localhost | Redis server host for rate limiting |
+| `REDIS_PORT` | 6379 | Redis server port |
+| `REDIS_PASSWORD` | - | Redis password (if required) |
+| `RATE_LIMIT_MAX_REQUESTS` | 20 | Maximum requests per time window |
+| `RATE_LIMIT_EXPIRE_SECONDS` | 3600 | Rate limit time window (1 hour) |
 | `WEB_SEARCH` | true | Enable web search fallback |
 | `WEB_SEARCH_CONTEXT_SIZE` | high | Web search context size (low/medium/high) |
 | `CHROMA_PERSIST_DIRECTORY` | ./chroma_db | ChromaDB storage path |
@@ -273,6 +417,16 @@ Once the server is running, visit:
 4. **Rate limiting from OpenAI**
    - The system includes automatic retry logic
    - Consider reducing batch size: `--batch-size 10`
+
+5. **"Rate limiting disabled due to Redis connection failure"**
+   - Ensure Redis is running: `redis-server`
+   - Check Redis connection: `redis-cli ping`
+   - Verify Redis configuration in `.env` file
+
+6. **"HTTP 429 Too Many Requests"**
+   - User has exceeded rate limits (default: 20 requests/hour)
+   - Check remaining requests: `GET /rate-limit/{user_id}`
+   - Wait for rate limit reset or increase limits in config
 
 ### Performance Tips
 

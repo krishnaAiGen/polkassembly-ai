@@ -23,6 +23,14 @@ class Config:
     # Mem0 Memory Configuration
     MEM0_API_KEY = os.getenv("MEM0_API_KEY", "")
     
+    # Redis Rate Limiting Configuration
+    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+    REDIS_DB = int(os.getenv("REDIS_DB", 0))
+    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
+    RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", 20))
+    RATE_LIMIT_EXPIRE_SECONDS = int(os.getenv("RATE_LIMIT_EXPIRE_SECONDS", 3600))
+    
     # API Configuration
     API_HOST = os.getenv("API_HOST", "0.0.0.0")
     API_PORT = int(os.getenv("API_PORT", 8000))
