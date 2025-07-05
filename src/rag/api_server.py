@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from .config import Config
 from ..utils.embeddings import EmbeddingManager
 from ..utils.qa_generator import QAGenerator
+from ..utils.content_guardrails import get_guardrails
 from ..utils.rate_limiter import check_rate_limit, get_client_stats
 
 # Configure logging
@@ -36,12 +37,13 @@ logger = logging.getLogger(__name__)
 # Global components
 embedding_manager: Optional[EmbeddingManager] = None
 qa_generator: Optional[QAGenerator] = None
+content_guardrails = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
     # Startup
-    global embedding_manager, qa_generator
+    global embedding_manager, qa_generator, content_guardrails
     
     try:
         logger.info("Starting Polkadot AI Chatbot API...")
@@ -49,6 +51,10 @@ async def lifespan(app: FastAPI):
         # Validate configuration
         Config.validate_config()
         logger.info("Configuration validated")
+        
+        # Initialize enhanced content guardrails
+        content_guardrails = get_guardrails(Config.OPENAI_API_KEY)
+        logger.info("Enhanced AI-powered content guardrails initialized")
         
         # Initialize embedding manager
         logger.info("Initializing embedding manager...")
@@ -179,11 +185,11 @@ async def health_check():
 
 @app.post("/query", response_model=QueryResponse)
 async def query_chatbot(request: QueryRequest):
-    """Main chatbot query endpoint with rate limiting"""
+    """Main chatbot query endpoint with enhanced guardrails and rate limiting"""
     start_time = datetime.now()
     
     try:
-        if not embedding_manager or not qa_generator:
+        if not embedding_manager or not qa_generator or not content_guardrails:
             raise HTTPException(status_code=503, detail="Service not initialized")
         
         if not embedding_manager.collection_exists():
@@ -198,6 +204,29 @@ async def query_chatbot(request: QueryRequest):
             raise HTTPException(
                 status_code=429, 
                 detail="Rate limit exceeded. Please try again later."
+            )
+        
+        # 🛡️ AI-powered content moderation
+        is_safe, category, helpful_response = content_guardrails.moderate_content(request.question)
+        
+        if not is_safe:
+            logger.warning(f"Unsafe query blocked - Category: {category}")
+            return QueryResponse(
+                answer=helpful_response,
+                sources=[],
+                follow_up_questions=[
+                    "How does Polkadot's governance system work?",
+                    "What are the benefits of staking DOT tokens?",
+                    "How do parachains communicate with each other?"
+                ],
+                remaining_requests=remaining_requests,
+                confidence=0.0,
+                context_used=False,
+                model_used=Config.OPENAI_MODEL,
+                chunks_used=0,
+                processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
+                timestamp=datetime.now().isoformat(),
+                search_method=f"blocked_{category}"
             )
         
         logger.info(f"Processing query from user {request.user_id}: '{request.question[:50]}...' (remaining: {remaining_requests})")
@@ -273,7 +302,30 @@ async def query_chatbot(request: QueryRequest):
         
     except Exception as e:
         logger.error(f"Error processing query: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        # Try to get remaining requests if possible, otherwise default to 0
+        try:
+            _, remaining_requests = check_rate_limit(request.user_id)
+        except:
+            remaining_requests = 0
+        
+        # Return helpful response even on error
+        return QueryResponse(
+            answer="I'd be happy to help you with Polkadot questions! What would you like to know about governance, staking, or parachains?",
+            sources=[],
+            follow_up_questions=[
+                "How does Polkadot's governance system work?",
+                "What are the benefits of staking DOT tokens?",
+                "How do parachains communicate with each other?"
+            ],
+            remaining_requests=remaining_requests,
+            confidence=0.0,
+            context_used=False,
+            model_used=Config.OPENAI_MODEL,
+            chunks_used=0,
+            processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
+            timestamp=datetime.now().isoformat(),
+            search_method="error"
+        )
 
 @app.post("/search", response_model=SearchResponse)
 async def search_documents(request: SearchRequest):
