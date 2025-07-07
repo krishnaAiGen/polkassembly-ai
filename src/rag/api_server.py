@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
             temperature=0.1,
             enable_web_search=Config.ENABLE_WEB_SEARCH,
             web_search_context_size=Config.WEB_SEARCH_CONTEXT_SIZE,
-            enable_memory=bool(Config.MEM0_API_KEY)  # Enable memory only if API key is provided
+            enable_memory=Config.USE_MEM0 and bool(Config.MEM0_API_KEY)  # Enable memory only if USE_MEM0 is true and API key is provided
         )
         
         logger.info("API startup completed successfully")
