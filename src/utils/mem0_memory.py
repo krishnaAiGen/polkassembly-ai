@@ -6,6 +6,7 @@ Provides persistent memory functionality for maintaining conversation context.
 
 import os
 import logging
+import warnings
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -13,6 +14,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# Filter out the specific Mem0 deprecation warning
+warnings.filterwarnings("ignore", message=".*output_format.*deprecated.*", category=DeprecationWarning)
 
 try:
     from mem0 import MemoryClient
@@ -33,6 +37,12 @@ class Mem0Memory:
         """
         self.enabled = False
         self.client = None
+        
+        # Check if Mem0 is enabled via environment variable
+        use_mem0 = os.getenv("USE_MEM0", "false").lower() in ("true", "1", "yes", "on")
+        if not use_mem0:
+            logger.info("Mem0 disabled via USE_MEM0 environment variable")
+            return
         
         if not MEM0_AVAILABLE:
             logger.warning("Mem0 package not available. Memory features disabled.")
