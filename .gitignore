@@ -11,6 +11,9 @@ chroma_db/
 *.sqlite3
 *.db
 
+#zip files
+*.zip
+
 # Data files and directories
 data/
 *.json
@@ -140,3 +143,5 @@ ehthumbs.db
 Thumbs.db 
 
 pk_ai_env
+#redis file
+*.rdb
