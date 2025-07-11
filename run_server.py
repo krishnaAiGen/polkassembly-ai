@@ -13,6 +13,12 @@ sys.path.insert(0, src_path)
 if __name__ == "__main__":
     import uvicorn
     from src.rag.config import Config
+    from src.utils.onchain_data import fetch_onchain_data
+
+    print("Fetching onchain data...")
+    fetch_onchain_data(max_items=50)
+    print("Onchain data fetched successfully")
+
     
     print("Starting Polkadot AI Chatbot API server...")
     uvicorn.run(

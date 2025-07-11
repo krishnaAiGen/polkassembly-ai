@@ -4,6 +4,8 @@ from typing import List, Dict, Any
 import time
 from utils.embeddings import EmbeddingManager
 from utils.data_loader import DataLoader
+from enum import Enum
+from rag.config import Config
 
 class ProposalType(Enum):
     DEMOCRACY_PROPOSAL = "DemocracyProposal"
@@ -60,20 +62,22 @@ class PolkassemblyDataProcessor:
             'Content-Type': 'application/json',
         }
         
-    def fetch_posts(self, proposal_type: ProposalType = ProposalType.DISCUSSION, origin_type: OriginType = OriginType.ROOT, limit: int = 100, offset: int = 0) -> List[Dict]:
+    def fetch_posts(self, proposal_type: ProposalType = ProposalType.REFERENDUM_V2, origin_type: OriginType = OriginType.ROOT, limit: int = 100, offset: int = 0) -> List[Dict]:
         """Fetch posts from Polkassembly API"""
         url = f"{self.base_url}/{proposal_type.value}"
         
         params = {
-            'limit': limit,
+            # 'limit': limit,
             'offset': offset,
             'origin_type': origin_type.value
         }
         
         try:
             response = requests.get(url, params=params, headers=self.headers)
+            print(response.json())
+            print(response.json().get('items', []))
             response.raise_for_status()
-            return response.json().get('data', [])
+            return response.json()
         except requests.exceptions.RequestException as e:
             print(f"Error fetching posts: {e}")
             return []
@@ -137,7 +141,12 @@ def fetch_onchain_data(max_items: int = 5000):
     for network in SupportedNetworks:
         # Initialize processor
         processor = PolkassemblyDataProcessor(network=network.value)
-        embedding_manager = EmbeddingManager()
+        embedding_manager = EmbeddingManager(
+            openai_api_key=Config.OPENAI_API_KEY,
+            embedding_model=Config.OPENAI_EMBEDDING_MODEL,
+            chroma_persist_directory=Config.CHROMA_PERSIST_DIRECTORY,
+            collection_name=Config.CHROMA_COLLECTION_NAME
+        )
 
         # Fetch data
         print(f"Fetching data from Polkassembly for {network.value}...")
@@ -145,11 +154,13 @@ def fetch_onchain_data(max_items: int = 5000):
         for proposal_type in ProposalType:
             if proposal_type == ProposalType.REFERENDUM_V2:
                 for origin_type in OriginType:
-                    data = processor.fetch_posts(proposal_type=proposal_type, origin_type=origin_type, max_items=max_items)
+                    data = processor.fetch_posts(proposal_type=proposal_type, origin_type=origin_type, limit=max_items)
+                    print(f"Fetched {len(data)} items for {network.value} {proposal_type.value} {origin_type.value}")
+                    print(data)
                     success = embedding_manager.add_onchain_data_to_collection(data)
-
+                    print(f"Successfully added {success} items to the collection")
             else:
-                data = processor.fetch_posts(proposal_type=proposal_type, max_items=max_items)
+                data = processor.fetch_posts(proposal_type=proposal_type, limit=max_items)
                 success = embedding_manager.add_onchain_data_to_collection(data)
 
         print(f"Fetched {len(data)} items for {network.value}")
