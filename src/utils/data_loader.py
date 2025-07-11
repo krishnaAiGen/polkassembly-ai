@@ -172,3 +172,46 @@ class DataLoader:
             stats['average_doc_length'] = stats['total_characters'] // len(documents)
         
         return stats 
+    
+    def load_json_data(self, data: Dict[str, str]) -> Dict[str, str]:
+        """Load a single JSON data and extract relevant content"""
+        try:
+            # Extract content from JSON structure
+            content_parts = []
+            
+            if 'title' in data:
+                content_parts.append(f"Title: {data['title']}")
+            
+            if 'description' in data:
+                content_parts.append(f"Description: {data['description']}")
+            
+            if 'content' in data and data['content']:
+                content_parts.append(data['content'])
+            
+            # Add topics if available (for forum data)
+            if 'topics' in data and data['topics']:
+                topics_text = "Related Topics:\n"
+                for topic in data['topics'][:10]:  # Limit to first 10 topics
+                    topics_text += f"- {topic.get('title', '')}\n"
+                content_parts.append(topics_text)
+            
+            content = '\n\n'.join(content_parts)
+            
+            metadata = {
+                'title': data.get('title', ''),
+                'url': data.get('url', ''),
+                'description': data.get('description', ''),
+                'source': 'polkadot_network' if 'polkadot_network' in file_path else 'polkadot_wiki',
+                'file_path': file_path,
+                'content_type': data.get('content_type', data.get('site_type', 'unknown'))
+            }
+            
+            return {
+                'content': content,
+                'metadata': metadata
+            }
+            
+        except Exception as e:
+            logger.error(f"Error loading JSON file {file_path}: {e}")
+            return None
+    
