@@ -107,6 +107,137 @@ class EmbeddingManager:
         
         return embeddings
     
+
+    def process_onchain_data(self, onchain_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Process onchain data and convert to chunks suitable for embedding
+        
+        Args:
+            onchain_data: The API response containing items and totalCount
+            
+        Returns:
+            List of processed chunks with content and metadata
+        """
+        chunks = []
+        
+        if 'items' not in onchain_data:
+            logger.error("No 'items' found in onchain data")
+            return chunks
+        
+        for item in onchain_data['items']:
+            try:
+                # Extract and clean the main content
+                title = item.get('title', '').strip()
+                content = item.get('content', '').strip()
+                
+                # Skip items without meaningful content
+                if not title and not content:
+                    logger.warning(f"Skipping item {item.get('id', 'unknown')} - no title or content")
+                    continue
+                
+                # Create the main text for embedding
+                # Combine title and content for better context
+                main_text = f"{title}\n\n{content}" if title and content else (title or content)
+                
+                # Clean up the text (remove excessive whitespace, HTML tags if any)
+                main_text = ' '.join(main_text.split())
+                
+                # Extract metadata
+                metadata = {
+                    'id': item.get('id', ''),
+                    'index': item.get('index', ''),
+                    'proposal_type': item.get('proposalType', ''),
+                    'network': item.get('network', ''),
+                    'title': title,
+                    'user_id': item.get('userId', ''),
+                    'created_at': item.get('createdAt', ''),
+                    'updated_at': item.get('updatedAt', ''),
+                    'source': 'polkassembly',
+                    'data_source': item.get('dataSource', ''),
+                }
+                
+                # Add onchain info if available
+                if 'onChainInfo' in item:
+                    onchain_info = item['onChainInfo']
+                    metadata.update({
+                        'status': onchain_info.get('status', ''),
+                        'origin': onchain_info.get('origin', ''),
+                        'proposer': onchain_info.get('proposer', ''),
+                        'hash': onchain_info.get('hash', ''),
+                        'decision_period_ends_at': onchain_info.get('decisionPeriodEndsAt', ''),
+                    })
+                    
+                    # Add vote metrics if available
+                    if 'voteMetrics' in onchain_info:
+                        vote_metrics = onchain_info['voteMetrics']
+                        metadata.update({
+                            'aye_count': vote_metrics.get('aye', {}).get('count', 0),
+                            'nay_count': vote_metrics.get('nay', {}).get('count', 0),
+                            'aye_value': vote_metrics.get('aye', {}).get('value', '0'),
+                            'nay_value': vote_metrics.get('nay', {}).get('value', '0'),
+                        })
+                
+                # Add user info if available
+                if 'publicUser' in item:
+                    user_info = item['publicUser']
+                    metadata.update({
+                        'username': user_info.get('username', ''),
+                        'user_rank': user_info.get('rank', ''),
+                        'profile_score': user_info.get('profileScore', ''),
+                    })
+                
+                # Add metrics if available
+                if 'metrics' in item:
+                    metrics = item['metrics']
+                    if 'reactions' in metrics:
+                        metadata.update({
+                            'likes': metrics['reactions'].get('like', 0),
+                            'dislikes': metrics['reactions'].get('dislike', 0),
+                        })
+                    metadata['comments_count'] = metrics.get('comments', 0)
+                
+                # Create chunk
+                chunk = {
+                    'content': main_text,
+                    'metadata': metadata
+                }
+                
+                chunks.append(chunk)
+                
+            except Exception as e:
+                logger.error(f"Error processing item {item.get('id', 'unknown')}: {e}")
+                continue
+        
+        logger.info(f"Processed {len(chunks)} chunks from {len(onchain_data['items'])} items")
+        return chunks
+    
+    def add_onchain_data_to_collection(self, onchain_data: Dict[str, Any]) -> bool:
+        """
+        Process onchain data and add to ChromaDB collection
+        
+        Args:
+            onchain_data: The API response containing items and totalCount
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Process the onchain data into chunks
+            chunks = self.process_onchain_data(onchain_data)
+            
+            if not chunks:
+                logger.warning("No valid chunks created from onchain data")
+                return False
+            
+            # Add chunks to collection using existing method
+            return self.add_chunks_to_collection(chunks)
+            
+        except Exception as e:
+            logger.error(f"Error adding onchain data to collection: {e}")
+            return False
+    
+
+    
     def add_chunks_to_collection(self, chunks: List[Dict[str, Any]]) -> bool:
         """
         Add chunks with embeddings to ChromaDB collection
