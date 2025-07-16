@@ -21,6 +21,7 @@ class Config:
     CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "polkadot_embeddings")
     
     # Mem0 Memory Configuration
+    USE_MEM0 = os.getenv("USE_MEM0", "false").lower() in ("true", "1", "yes", "on")
     MEM0_API_KEY = os.getenv("MEM0_API_KEY", "")
     
     # Redis Rate Limiting Configuration
