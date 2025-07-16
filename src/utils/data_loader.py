@@ -1,20 +1,82 @@
 import os
 import json
 import logging
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DataLoader:
-    """Load and process data from Polkadot network and wiki sources"""
+    """Load and process data from static (.txt) and dynamic (.json) sources"""
     
-    def __init__(self, polkadot_network_path: str, polkadot_wiki_path: str):
-        self.polkadot_network_path = polkadot_network_path
-        self.polkadot_wiki_path = polkadot_wiki_path
+    def __init__(self, static_data_path: str, dynamic_data_path: str):
+        self.static_data_path = static_data_path
+        self.dynamic_data_path = dynamic_data_path
     
-    def load_text_file(self, file_path: str) -> Dict[str, str]:
+    def find_all_files(self, directory: str, extension: str) -> List[str]:
+        """Recursively find all files with given extension in directory and subdirectories"""
+        file_paths = []
+        
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                if file.endswith(extension):
+                    file_path = os.path.join(root, file)
+                    file_paths.append(file_path)
+        
+        return file_paths
+    
+    def load_static_data(self) -> List[Dict[str, Any]]:
+        """Load all .txt files from static data source and subdirectories"""
+        logger.info(f"Loading static data from: {self.static_data_path}")
+        
+        if not os.path.exists(self.static_data_path):
+            logger.warning(f"Static data path does not exist: {self.static_data_path}")
+            return []
+        
+        # Find all .txt files recursively
+        txt_files = self.find_all_files(self.static_data_path, '.txt')
+        logger.info(f"Found {len(txt_files)} .txt files")
+        
+        static_data = []
+        
+        for file_path in txt_files:
+            try:
+                data = self.load_text_file(file_path)
+                if data:
+                    static_data.append(data)
+            except Exception as e:
+                logger.error(f"Error loading static file {file_path}: {e}")
+        
+        logger.info(f"Successfully loaded {len(static_data)} static data items")
+        return static_data
+    
+    def load_dynamic_data(self) -> List[Dict[str, Any]]:
+        """Load all .json files from dynamic data source and subdirectories"""
+        logger.info(f"Loading dynamic data from: {self.dynamic_data_path}")
+        
+        if not os.path.exists(self.dynamic_data_path):
+            logger.warning(f"Dynamic data path does not exist: {self.dynamic_data_path}")
+            return []
+        
+        # Find all .json files recursively
+        json_files = self.find_all_files(self.dynamic_data_path, '.json')
+        logger.info(f"Found {len(json_files)} .json files")
+        
+        dynamic_data = []
+        
+        for file_path in json_files:
+            try:
+                data = self.load_json_file(file_path)
+                if data:
+                    dynamic_data.append(data)
+            except Exception as e:
+                logger.error(f"Error loading dynamic file {file_path}: {e}")
+        
+        logger.info(f"Successfully loaded {len(dynamic_data)} dynamic data items")
+        return dynamic_data
+    
+    def load_text_file(self, file_path: str) -> Dict[str, Any]:
         """Load a single text file and extract metadata"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -56,8 +118,10 @@ class DataLoader:
                         break
                 text_content = '\n'.join(lines[start_idx:]).strip()
             
-            metadata['source'] = 'polkadot_network' if 'polkadot_network' in file_path else 'polkadot_wiki'
+            # Add source information
+            metadata['source'] = 'static'
             metadata['file_path'] = file_path
+            metadata['relative_path'] = os.path.relpath(file_path, self.static_data_path)
             
             return {
                 'content': text_content,
@@ -65,10 +129,10 @@ class DataLoader:
             }
             
         except Exception as e:
-            logger.error(f"Error loading file {file_path}: {e}")
+            logger.error(f"Error loading text file {file_path}: {e}")
             return None
     
-    def load_json_file(self, file_path: str) -> Dict[str, str]:
+    def load_json_file(self, file_path: str) -> Dict[str, Any]:
         """Load a single JSON file and extract relevant content"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -99,10 +163,15 @@ class DataLoader:
                 'title': data.get('title', ''),
                 'url': data.get('url', ''),
                 'description': data.get('description', ''),
-                'source': 'polkadot_network' if 'polkadot_network' in file_path else 'polkadot_wiki',
+                'source': 'dynamic',
                 'file_path': file_path,
-                'content_type': data.get('content_type', data.get('site_type', 'unknown'))
+                'relative_path': os.path.relpath(file_path, self.dynamic_data_path)
             }
+            
+            # Add any additional metadata from JSON
+            for key, value in data.items():
+                if key not in ['title', 'url', 'description', 'content', 'topics'] and isinstance(value, (str, int, float, bool)):
+                    metadata[key] = value
             
             return {
                 'content': content,
@@ -113,105 +182,25 @@ class DataLoader:
             logger.error(f"Error loading JSON file {file_path}: {e}")
             return None
     
-    def load_all_documents(self) -> List[Dict[str, str]]:
-        """Load all documents from both data sources"""
-        documents = []
+    def get_data_status(self) -> Dict[str, Any]:
+        """Get status information about available data"""
+        static_files = self.find_all_files(self.static_data_path, '.txt') if os.path.exists(self.static_data_path) else []
+        dynamic_files = self.find_all_files(self.dynamic_data_path, '.json') if os.path.exists(self.dynamic_data_path) else []
         
-        # Load from polkadot_network
-        if os.path.exists(self.polkadot_network_path):
-            logger.info(f"Loading documents from {self.polkadot_network_path}")
-            for file_name in os.listdir(self.polkadot_network_path):
-                file_path = os.path.join(self.polkadot_network_path, file_name)
-                if os.path.isfile(file_path):
-                    if file_name.endswith('.txt'):
-                        doc = self.load_text_file(file_path)
-                        if doc and doc['content'].strip():
-                            documents.append(doc)
-                    elif file_name.endswith('.json'):
-                        # Skip JSON files that have corresponding TXT files
-                        txt_file = file_name.replace('.json', '.txt')
-                        txt_path = os.path.join(self.polkadot_network_path, txt_file)
-                        if not os.path.exists(txt_path):
-                            doc = self.load_json_file(file_path)
-                            if doc and doc['content'].strip():
-                                documents.append(doc)
-        
-        # Load from polkadot_wiki
-        if os.path.exists(self.polkadot_wiki_path):
-            logger.info(f"Loading documents from {self.polkadot_wiki_path}")
-            for file_name in os.listdir(self.polkadot_wiki_path):
-                file_path = os.path.join(self.polkadot_wiki_path, file_name)
-                if os.path.isfile(file_path) and file_name.endswith('.txt'):
-                    doc = self.load_text_file(file_path)
-                    if doc and doc['content'].strip():
-                        documents.append(doc)
-        
-        logger.info(f"Loaded {len(documents)} documents in total")
-        return documents
-    
-    def get_document_stats(self, documents: List[Dict[str, str]]) -> Dict[str, int]:
-        """Get statistics about loaded documents"""
-        stats = {
-            'total_documents': len(documents),
-            'polkadot_network_docs': 0,
-            'polkadot_wiki_docs': 0,
-            'total_characters': 0,
-            'average_doc_length': 0
-        }
-        
-        for doc in documents:
-            source = doc['metadata']['source']
-            if source == 'polkadot_network':
-                stats['polkadot_network_docs'] += 1
-            elif source == 'polkadot_wiki':
-                stats['polkadot_wiki_docs'] += 1
-            
-            stats['total_characters'] += len(doc['content'])
-        
-        if len(documents) > 0:
-            stats['average_doc_length'] = stats['total_characters'] // len(documents)
-        
-        return stats 
-    
-    def load_json_data(self, data: Dict[str, str]) -> Dict[str, str]:
-        """Load a single JSON data and extract relevant content"""
-        try:
-            # Extract content from JSON structure
-            content_parts = []
-            
-            if 'title' in data:
-                content_parts.append(f"Title: {data['title']}")
-            
-            if 'description' in data:
-                content_parts.append(f"Description: {data['description']}")
-            
-            if 'content' in data and data['content']:
-                content_parts.append(data['content'])
-            
-            # Add topics if available (for forum data)
-            if 'topics' in data and data['topics']:
-                topics_text = "Related Topics:\n"
-                for topic in data['topics'][:10]:  # Limit to first 10 topics
-                    topics_text += f"- {topic.get('title', '')}\n"
-                content_parts.append(topics_text)
-            
-            content = '\n\n'.join(content_parts)
-            
-            metadata = {
-                'title': data.get('title', ''),
-                'url': data.get('url', ''),
-                'description': data.get('description', ''),
-                'source': 'polkadot_network' if 'polkadot_network' in file_path else 'polkadot_wiki',
-                'file_path': file_path,
-                'content_type': data.get('content_type', data.get('site_type', 'unknown'))
+        return {
+            'static_data': {
+                'path': self.static_data_path,
+                'exists': os.path.exists(self.static_data_path),
+                'file_count': len(static_files),
+                'files': static_files[:10]  # Show first 10 files
+            },
+            'dynamic_data': {
+                'path': self.dynamic_data_path,
+                'exists': os.path.exists(self.dynamic_data_path),
+                'file_count': len(dynamic_files),
+                'files': dynamic_files[:10]  # Show first 10 files
             }
-            
-            return {
-                'content': content,
-                'metadata': metadata
-            }
-            
-        except Exception as e:
-            logger.error(f"Error loading JSON file {file_path}: {e}")
-            return None
+        } 
+    
+
     

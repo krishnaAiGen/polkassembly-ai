@@ -140,3 +140,9 @@ ehthumbs.db
 Thumbs.db 
 
 pk_ai_env
+
+#redis file
+*.rdb
+
+#zip files
+*.zip

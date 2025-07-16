@@ -19,6 +19,7 @@ from .config import Config
 from ..utils.data_loader import DataLoader
 from ..utils.text_chunker import TextChunker
 from ..utils.embeddings import EmbeddingManager
+from ..utils.onchain_data import extract_all_onchain_data, create_embeddings_from_stored_data, fetch_onchain_data
 
 # Configure logging
 logging.basicConfig(
@@ -37,6 +38,10 @@ def main():
     parser.add_argument('--batch-size', type=int, default=50, help='Batch size for embedding generation')
     parser.add_argument('--min-tokens', type=int, default=50, help='Minimum tokens per chunk')
     parser.add_argument('--max-tokens', type=int, default=1000, help='Maximum tokens per chunk')
+    parser.add_argument('--onchain-only', action='store_true', help='Process only onchain data')
+    parser.add_argument('--extract-only', action='store_true', help='Only extract onchain data, do not create embeddings')
+    parser.add_argument('--embeddings-only', action='store_true', help='Only create embeddings from stored onchain data')
+    parser.add_argument('--max-onchain-items', type=int, default=5000, help='Maximum items to fetch per onchain request')
     
     args = parser.parse_args()
     
@@ -47,6 +52,25 @@ def main():
         # Validate configuration
         Config.validate_config()
         logger.info("Configuration validated successfully")
+        
+        # Handle onchain data specific operations
+        if args.extract_only:
+            logger.info("Extracting onchain data only...")
+            summary = extract_all_onchain_data(max_items=args.max_onchain_items)
+            logger.info(f"Extraction completed: {summary}")
+            return
+        
+        if args.embeddings_only:
+            logger.info("Creating embeddings from stored onchain data only...")
+            summary = create_embeddings_from_stored_data()
+            logger.info(f"Embedding creation completed: {summary}")
+            return
+        
+        if args.onchain_only:
+            logger.info("Processing onchain data only (extract + embeddings)...")
+            result = fetch_onchain_data(max_items=args.max_onchain_items)
+            logger.info(f"Onchain data processing completed: {result}")
+            return
         
         # Initialize components
         logger.info("Initializing components...")
@@ -127,6 +151,11 @@ def main():
             return
         
         logger.info(f"Using {len(filtered_chunks)} chunks for embedding generation")
+        
+        # Process onchain data if not specifically excluded
+        logger.info("Processing onchain data...")
+        onchain_result = fetch_onchain_data(max_items=args.max_onchain_items)
+        logger.info(f"Onchain data processing completed: {onchain_result}")
         
         # Create embeddings and add to ChromaDB
         logger.info("Creating embeddings and storing in ChromaDB...")

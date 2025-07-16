@@ -1,167 +1,142 @@
 import requests
 import json
-from typing import List, Dict, Any
+import os
+from typing import List, Dict, Any, Tuple
 import time
-from utils.embeddings import EmbeddingManager
-from utils.data_loader import DataLoader
 from enum import Enum
-from rag.config import Config
+import logging
 
-class ProposalType(Enum):
-    DEMOCRACY_PROPOSAL = "DemocracyProposal"
-    TECH_COMMITTEE_PROPOSAL = "TechCommitteeProposal"
-    TREASURY_PROPOSAL = "TreasuryProposal"
-    REFERENDUM = "Referendum"
-    COUNCIL_MOTION = "CouncilMotion"
-    BOUNTY = "Bounty"
-    TIP = "Tip"
-    CHILD_BOUNTY = "ChildBounty"
-    REFERENDUM_V2 = "ReferendumV2"
-    FELLOWSHIP_REFERENDUM = "FellowshipReferendum"
-
-
-class OriginType(Enum):
-    AUCTION_ADMIN = "AuctionAdmin"
-    BIG_SPENDER = "BigSpender"
-    BIG_TIPPER = "BigTipper"
-    CANDIDATES = "Candidates"
-    EXPERTS = "Experts"
-    FELLOWS = "Fellows"
-    FELLOWSHIP_ADMIN = "FellowshipAdmin"
-    GENERAL_ADMIN = "GeneralAdmin"
-    GRAND_MASTERS = "GrandMasters"
-    LEASE_ADMIN = "LeaseAdmin"
-    MASTERS = "Masters"
-    MEDIUM_SPENDER = "MediumSpender"
-    MEMBERS = "Members"
-    PROFICIENTS = "Proficients"
-    REFERENDUM_CANCELLER = "ReferendumCanceller"
-    REFERENDUM_KILLER = "ReferendumKiller"
-    ROOT = "Root"
-    SENIOR_EXPERTS = "SeniorExperts"
-    SENIOR_FELLOWS = "SeniorFellows"
-    SENIOR_MASTERS = "SeniorMasters"
-    SMALL_SPENDER = "SmallSpender"
-    SMALL_TIPPER = "SmallTipper"
-    STAKING_ADMIN = "StakingAdmin"
-    TREASURER = "Treasurer"
-    WHITELISTED_CALLER = "WhitelistedCaller"
-    WISH_FOR_CHANGE = "WishForChange"
-    FAST_GENERAL_ADMIN = "FastGeneralAdmin"
-
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class SupportedNetworks(Enum):
     POLKADOT = "polkadot"
     KUSAMA = "kusama"
 
-
 class PolkassemblyDataProcessor:
+    """Process data from Polkassembly API"""
+    
     def __init__(self, network: str = "polkadot"):
-        self.base_url = f"https://{network}.polkassembly.io/api/v2"
-        self.headers = {
-            'Content-Type': 'application/json',
-        }
+        self.network = network
+        self.base_url = "https://api.polkassembly.io/api/v1"
         
-    def fetch_posts(self, proposal_type: ProposalType = ProposalType.REFERENDUM_V2, origin_type: OriginType = OriginType.ROOT, limit: int = 100, offset: int = 0) -> List[Dict]:
-        """Fetch posts from Polkassembly API"""
-        url = f"{self.base_url}/{proposal_type.value}"
+        # Proposal types to fetch
+        self.proposal_types = [
+            "Democracy",
+            "TechCommitteeProposal",
+            "TreasuryProposal",
+            "Referendum",
+            "CouncilMotion",
+            "Tip",
+            "Bounty",
+            "ChildBounty",
+            "DemocracyProposal",
+            "ReferendumV2",
+            "FellowshipReferendum"
+        ]
         
-        params = {
-            # 'limit': limit,
-            'offset': offset,
-            'origin_type': origin_type.value
-        }
+        # ReferendumV2 origins (only for Polkadot network)
+        self.referendum_v2_origins = [
+            "Root",
+            "WhitelistedCaller",
+            "StakingAdmin",
+            "Treasurer",
+            "LeaseAdmin",
+            "FellowshipAdmin",
+            "GeneralAdmin",
+            "AuctionAdmin",
+            "ReferendumCanceller",
+            "ReferendumKiller",
+            "SmallTipper",
+            "BigTipper",
+            "SmallSpender",
+            "MediumSpender",
+            "BigSpender",
+            "WishForChange",
+            "FastGeneralAdmin",
+            "Candidates",
+            "Members",
+            "Proficients",
+            "Fellows",
+            "SeniorFellows",
+            "Experts",
+            "SeniorExperts",
+            "Masters",
+            "SeniorMasters",
+            "GrandMasters"
+        ]
+    
+    def fetch_proposal_data(self, proposal_type: str, origin: str = None) -> Dict[str, Any]:
+        """Fetch proposal data from Polkassembly API"""
+        import requests
+        import time
+        
+        # Construct URL
+        if proposal_type == "ReferendumV2" and origin:
+            url = f"{self.base_url}/listing/{proposal_type.lower()}/{origin}?network={self.network}&listingLimit=10"
+        else:
+            url = f"{self.base_url}/listing/{proposal_type.lower()}?network={self.network}&listingLimit=10"
         
         try:
-            response = requests.get(url, params=params, headers=self.headers)
-            print(response.json())
-            print(response.json().get('items', []))
+            response = requests.get(url, timeout=30)
             response.raise_for_status()
+            
+            # Add delay to respect rate limits
+            time.sleep(0.5)
+            
             return response.json()
+            
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching posts: {e}")
-            return []
+            logger.error(f"Error fetching {proposal_type} data: {e}")
+            return {"items": [], "totalCount": 0}
     
-    # def fetch_proposals(self, network: str = "polkadot", limit: int = 100, offset: int = 0) -> List[Dict]:
-    #     """Fetch proposals from Polkassembly API"""
-    #     url = f"{self.base_url}/proposals"
+    def fetch_all_proposal_data(self, max_items: int = 1000) -> Dict[str, Any]:
+        """Fetch all proposal data from Polkassembly API"""
+        all_data = {"items": [], "totalCount": 0}
+        total_fetched = 0
         
-    #     params = {
-    #         'network': network,
-    #         'limit': limit,
-    #         'offset': offset
-    #     }
+        logger.info(f"Fetching data for {self.network} network...")
         
-    #     try:
-    #         response = requests.get(url, params=params, headers=self.headers)
-    #         response.raise_for_status()
-    #         return response.json().get('proposals', [])
-    #     except requests.exceptions.RequestException as e:
-    #         print(f"Error fetching proposals: {e}")
-    #         return []
-    
-    # def fetch_all_data(self, network: str = "polkadot", max_items: int = 1000) -> Dict[str, List]:
-        """Fetch all posts and proposals with pagination"""
-        all_posts = []
-        all_proposals = []
-        
-        # Fetch posts
-        offset = 0
-        limit = 100
-        
-        print("Fetching posts...")
-        while len(all_posts) < max_items:
-            posts = self.fetch_posts(network, limit, offset)
-            if not posts:
+        for proposal_type in self.proposal_types:
+            if total_fetched >= max_items:
                 break
-            all_posts.extend(posts)
-            offset += limit
-            time.sleep(0.1)  # Rate limiting
-            print(f"Fetched {len(all_posts)} posts so far...")
-        
-        # Fetch proposals
-        offset = 0
-        print("Fetching proposals...")
-        while len(all_proposals) < max_items:
-            proposals = self.fetch_proposals(network, limit, offset)
-            if not proposals:
-                break
-            all_proposals.extend(proposals)
-            offset += limit
-            time.sleep(0.1)  # Rate limiting
-            print(f"Fetched {len(all_proposals)} proposals so far...")
-        
-        return {
-            'posts': all_posts[:max_items],
-            'proposals': all_proposals[:max_items]
-        }
-    
-def fetch_onchain_data(max_items: int = 5000):
-
-    for network in SupportedNetworks:
-        # Initialize processor
-        processor = PolkassemblyDataProcessor(network=network.value)
-        embedding_manager = EmbeddingManager(
-            openai_api_key=Config.OPENAI_API_KEY,
-            embedding_model=Config.OPENAI_EMBEDDING_MODEL,
-            chroma_persist_directory=Config.CHROMA_PERSIST_DIRECTORY,
-            collection_name=Config.CHROMA_COLLECTION_NAME
-        )
-
-        # Fetch data
-        print(f"Fetching data from Polkassembly for {network.value}...")
-    
-        for proposal_type in ProposalType:
-            if proposal_type == ProposalType.REFERENDUM_V2:
-                for origin_type in OriginType:
-                    data = processor.fetch_posts(proposal_type=proposal_type, origin_type=origin_type, limit=max_items)
-                    print(f"Fetched {len(data)} items for {network.value} {proposal_type.value} {origin_type.value}")
-                    print(data)
-                    success = embedding_manager.add_onchain_data_to_collection(data)
-                    print(f"Successfully added {success} items to the collection")
+                
+            logger.info(f"Fetching {proposal_type} data...")
+            
+            if proposal_type == "ReferendumV2" and self.network == "polkadot":
+                # Handle ReferendumV2 with different origins
+                for origin in self.referendum_v2_origins:
+                    if total_fetched >= max_items:
+                        break
+                        
+                    data = self.fetch_proposal_data(proposal_type, origin)
+                    if data["items"]:
+                        all_data["items"].extend(data["items"])
+                        all_data["totalCount"] += data["totalCount"]
+                        total_fetched += len(data["items"])
+                        logger.info(f"  {origin}: {len(data['items'])} items")
             else:
-                data = processor.fetch_posts(proposal_type=proposal_type, limit=max_items)
-                success = embedding_manager.add_onchain_data_to_collection(data)
+                data = self.fetch_proposal_data(proposal_type)
+                if data["items"]:
+                    all_data["items"].extend(data["items"])
+                    all_data["totalCount"] += data["totalCount"]
+                    total_fetched += len(data["items"])
+                    logger.info(f"  {proposal_type}: {len(data['items'])} items")
+        
+        logger.info(f"Total fetched: {total_fetched} items")
+        return all_data
 
-        print(f"Fetched {len(data)} items for {network.value}")
-        print(f"Successfully added {success} items to the collection")
+def fetch_onchain_data(network: str = "polkadot", max_items: int = 1000) -> Dict[str, Any]:
+    """Fetch onchain data from Polkassembly API"""
+    processor = PolkassemblyDataProcessor(network)
+    return processor.fetch_all_proposal_data(max_items)
+
+# Legacy function for backward compatibility
+def get_onchain_data_status(use_multi_collection: bool = False) -> Dict[str, Any]:
+    """Legacy function - returns empty status"""
+    return {
+        "ready": False,
+        "data": {"exists": False, "info": {"total_files": 0}},
+        "embeddings": {"exists": False, "info": {"total_chunks": 0}},
+        "multi_collection": use_multi_collection
+    }

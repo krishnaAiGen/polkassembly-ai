@@ -433,33 +433,4 @@ Answer the question directly without mentioning the context, sources, or documen
         confidence = min(avg_similarity + chunk_bonus, 1.0)
         return round(confidence, 2)
     
-    def generate_summary(self, chunks: List[Dict[str, Any]]) -> str:
-        """Generate a summary of the retrieved chunks"""
-        try:
-            if not chunks:
-                return "No relevant information found."
-            
-            # Create a condensed context
-            context = self.create_context_from_chunks(chunks, max_context_length=2000)
-            
-            summary_prompt = """Please provide a brief summary of the following Polkadot-related information:
-
-{context}
-
-Summary:"""
-            
-            response = openai.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "user", "content": summary_prompt.format(context=context)}
-                ],
-                temperature=0.2,
-                max_tokens=300
-            )
-            
-            summary = response.choices[0].message.content.strip()
-            return summary
-            
-        except Exception as e:
-            logger.error(f"Error generating summary: {e}")
-            return "Unable to generate summary." 
+ 

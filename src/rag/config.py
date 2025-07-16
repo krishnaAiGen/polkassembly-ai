@@ -31,11 +31,11 @@ class Config:
     # Retrieval Configuration
     TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", 5))
     SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", 0.7))
+    SEARCH_ONCHAIN_DATA = os.getenv("SEARCH_ONCHAIN_DATA", "true").lower() == "true"
     
-    # Data paths
-    DATA_SOURCES_PATH = "data/data_sources"
-    POLKADOT_NETWORK_PATH = os.path.join(DATA_SOURCES_PATH, "polkadot_network")
-    POLKADOT_WIKI_PATH = os.path.join(DATA_SOURCES_PATH, "polkadot_wiki")
+    # Data Sources Configuration
+    STATIC_DATA_SOURCE = os.getenv("STATIC_DATA_SOURCE", "data/data_sources/static_data")
+    DYNAMIC_DATA_SOURCE = os.getenv("DYNAMIC_DATA_SOURCE", "data/data_sources/onchain_data")
     
     @classmethod
     def validate_config(cls):
@@ -43,7 +43,10 @@ class Config:
         if not cls.OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY must be set in environment variables")
         
-        if not os.path.exists(cls.DATA_SOURCES_PATH):
-            raise ValueError(f"Data sources path does not exist: {cls.DATA_SOURCES_PATH}")
+        if not os.path.exists(cls.STATIC_DATA_SOURCE):
+            raise ValueError(f"Static data source path does not exist: {cls.STATIC_DATA_SOURCE}")
+            
+        if not os.path.exists(cls.DYNAMIC_DATA_SOURCE):
+            raise ValueError(f"Dynamic data source path does not exist: {cls.DYNAMIC_DATA_SOURCE}")
             
         return True 

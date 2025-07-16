@@ -21,7 +21,7 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from .config import Config
-from ..utils.embeddings import EmbeddingManager
+from ..utils.embeddings import DualEmbeddingManager
 from ..utils.qa_generator import QAGenerator
 
 # Configure logging
@@ -50,7 +50,7 @@ app.add_middleware(
 )
 
 # Global components
-embedding_manager: Optional[EmbeddingManager] = None
+embedding_manager: Optional[DualEmbeddingManager] = None
 qa_generator: Optional[QAGenerator] = None
 
 # Request/Response models
@@ -110,21 +110,25 @@ async def startup_event():
         Config.validate_config()
         logger.info("Configuration validated")
         
-        # Initialize embedding manager
-        logger.info("Initializing embedding manager...")
-        embedding_manager = EmbeddingManager(
+        # Initialize embedding manager (dual collection)
+        logger.info("Initializing dual embedding manager...")
+        embedding_manager = DualEmbeddingManager(
             openai_api_key=Config.OPENAI_API_KEY,
             embedding_model=Config.OPENAI_EMBEDDING_MODEL,
-            chroma_persist_directory=Config.CHROMA_PERSIST_DIRECTORY,
-            collection_name=Config.CHROMA_COLLECTION_NAME
+            chroma_persist_directory=Config.CHROMA_PERSIST_DIRECTORY
         )
         
-        # Check if collection has data
-        if not embedding_manager.collection_exists():
-            logger.warning("ChromaDB collection is empty. Please run create_embeddings.py first.")
+        # Check if collections have data
+        stats = embedding_manager.get_collection_stats()
+        static_count = stats['static_collection']['count']
+        dynamic_count = stats['dynamic_collection']['count']
+        
+        if static_count == 0 and dynamic_count == 0:
+            logger.warning("ChromaDB collections are empty. Please run the server initialization first.")
         else:
-            stats = embedding_manager.get_collection_stats()
-            logger.info(f"Loaded collection with {stats.get('total_chunks', 0)} chunks")
+            logger.info(f"Loaded collections with {stats['total_documents']} documents total")
+            logger.info(f"  Static: {static_count} documents")
+            logger.info(f"  Dynamic: {dynamic_count} documents")
         
         # Initialize QA generator
         logger.info("Initializing QA generator...")
@@ -152,7 +156,7 @@ async def health_check():
         stats = embedding_manager.get_collection_stats()
         
         return HealthResponse(
-            status="healthy" if stats.get('total_chunks', 0) > 0 else "no_data",
+            status="healthy" if stats.get('total_documents', 0) > 0 else "no_data",
             collection_stats=stats,
             timestamp=datetime.now().isoformat()
         )
@@ -169,8 +173,9 @@ async def query_chatbot(request: QueryRequest):
         if not embedding_manager or not qa_generator:
             raise HTTPException(status_code=503, detail="Service not initialized")
         
-        if not embedding_manager.collection_exists():
-            raise HTTPException(status_code=503, detail="No data available. Please create embeddings first.")
+        stats = embedding_manager.get_collection_stats()
+        if stats['total_documents'] == 0:
+            raise HTTPException(status_code=503, detail="No data available. Please run server initialization first.")
         
         logger.info(f"Processing query: '{request.question[:50]}...'")
         
@@ -242,21 +247,24 @@ async def search_documents(request: SearchRequest):
         if not embedding_manager:
             raise HTTPException(status_code=503, detail="Service not initialized")
         
-        if not embedding_manager.collection_exists():
-            raise HTTPException(status_code=503, detail="No data available. Please create embeddings first.")
+        stats = embedding_manager.get_collection_stats()
+        if stats['total_documents'] == 0:
+            raise HTTPException(status_code=503, detail="No data available. Please run server initialization first.")
         
         logger.info(f"Processing search: '{request.query[:50]}...'")
         
-        # Prepare filter if source filter is specified
-        filter_metadata = None
+        # Search for chunks (source filter is handled by the search_onchain parameter)
+        search_onchain = None
         if request.source_filter:
-            filter_metadata = {"source": request.source_filter}
+            if request.source_filter == "static":
+                search_onchain = False
+            elif request.source_filter == "dynamic":
+                search_onchain = True
         
-        # Search for chunks
         chunks = embedding_manager.search_similar_chunks(
             query=request.query,
             n_results=request.n_results,
-            filter_metadata=filter_metadata
+            search_onchain=search_onchain
         )
         
         # Format results
@@ -264,7 +272,7 @@ async def search_documents(request: SearchRequest):
             SearchResult(
                 content=chunk['content'],
                 metadata=chunk['metadata'],
-                similarity_score=chunk['similarity_score']
+                similarity_score=chunk['score']
             )
             for chunk in chunks
         ]
