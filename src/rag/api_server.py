@@ -35,7 +35,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global components
-embedding_manager: Optional[EmbeddingManager] = None
+static_embedding_manager: Optional[EmbeddingManager] = None
+dynamic_embedding_manager: Optional[EmbeddingManager] = None
 qa_generator: Optional[QAGenerator] = None
 content_guardrails = None
 
@@ -43,7 +44,7 @@ content_guardrails = None
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
     # Startup
-    global embedding_manager, qa_generator, content_guardrails
+    global static_embedding_manager, dynamic_embedding_manager, qa_generator, content_guardrails
     
     try:
         logger.info("Starting Polkadot AI Chatbot API...")
@@ -56,21 +57,36 @@ async def lifespan(app: FastAPI):
         content_guardrails = get_guardrails(Config.OPENAI_API_KEY)
         logger.info("Enhanced AI-powered content guardrails initialized")
         
-        # Initialize embedding manager
-        logger.info("Initializing embedding manager...")
-        embedding_manager = EmbeddingManager(
+        # Initialize static embedding manager
+        logger.info("Initializing static embedding manager...")
+        static_embedding_manager = EmbeddingManager(
             openai_api_key=Config.OPENAI_API_KEY,
             embedding_model=Config.OPENAI_EMBEDDING_MODEL,
             chroma_persist_directory=Config.CHROMA_PERSIST_DIRECTORY,
             collection_name=Config.CHROMA_COLLECTION_NAME
         )
         
-        # Check if collection has data
-        if not embedding_manager.collection_exists():
-            logger.warning("ChromaDB collection is empty. Please run create_embeddings.py first.")
+        # Initialize dynamic embedding manager
+        logger.info("Initializing dynamic embedding manager...")
+        dynamic_embedding_manager = EmbeddingManager(
+            openai_api_key=Config.OPENAI_API_KEY,
+            embedding_model=Config.OPENAI_EMBEDDING_MODEL,
+            chroma_persist_directory=Config.CHROMA_PERSIST_DIRECTORY,
+            collection_name=Config.CHROMA_DYNAMIC_COLLECTION_NAME
+        )
+        
+        # Check if collections have data
+        if not static_embedding_manager.collection_exists():
+            logger.warning("Static ChromaDB collection is empty. Please run create_embeddings.py first.")
         else:
-            stats = embedding_manager.get_collection_stats()
-            logger.info(f"Loaded collection with {stats.get('total_chunks', 0)} chunks")
+            stats = static_embedding_manager.get_collection_stats()
+            logger.info(f"Loaded static collection with {stats.get('total_chunks', 0)} chunks")
+        
+        if not dynamic_embedding_manager.collection_exists():
+            logger.warning("Dynamic ChromaDB collection is empty. Please run create_dynamic_embeddings.py first.")
+        else:
+            stats = dynamic_embedding_manager.get_collection_stats()
+            logger.info(f"Loaded dynamic collection with {stats.get('total_chunks', 0)} chunks")
         
         # Initialize QA generator
         logger.info("Initializing QA generator...")
@@ -169,10 +185,10 @@ class SearchResponse(BaseModel):
 async def health_check():
     """Health check endpoint"""
     try:
-        if not embedding_manager:
-            raise HTTPException(status_code=503, detail="Embedding manager not initialized")
+        if not static_embedding_manager or not dynamic_embedding_manager:
+            raise HTTPException(status_code=503, detail="Embedding managers not initialized")
         
-        stats = embedding_manager.get_collection_stats()
+        stats = static_embedding_manager.get_collection_stats()
         
         return HealthResponse(
             status="healthy" if stats.get('total_chunks', 0) > 0 else "no_data",
@@ -189,10 +205,10 @@ async def query_chatbot(request: QueryRequest):
     start_time = datetime.now()
     
     try:
-        if not embedding_manager or not qa_generator or not content_guardrails:
+        if not static_embedding_manager or not dynamic_embedding_manager or not qa_generator or not content_guardrails:
             raise HTTPException(status_code=503, detail="Service not initialized")
         
-        if not embedding_manager.collection_exists():
+        if not static_embedding_manager.collection_exists() and not dynamic_embedding_manager.collection_exists():
             raise HTTPException(status_code=503, detail="No data available. Please create embeddings first.")
         
         # Check rate limit using user_id as primary identifier
@@ -231,11 +247,23 @@ async def query_chatbot(request: QueryRequest):
         
         logger.info(f"Processing query from user {request.user_id}: '{request.question[:50]}...' (remaining: {remaining_requests})")
         
-        # Search for relevant chunks
-        chunks = embedding_manager.search_similar_chunks(
+        # Search for relevant chunks in both collections
+        static_chunks = static_embedding_manager.search_similar_chunks(
             query=request.question,
             n_results=request.max_chunks
         )
+       
+        dynamic_chunks = dynamic_embedding_manager.search_similar_chunks(
+            query=request.question,
+            n_results=request.max_chunks
+        )
+       
+        # Get max similarity score from each collection
+        static_max_score = max([chunk['similarity_score'] for chunk in static_chunks]) if static_chunks else 0
+        dynamic_max_score = max([chunk['similarity_score'] for chunk in dynamic_chunks]) if dynamic_chunks else 0
+        
+        # Use chunks from the collection with higher max similarity score
+        chunks = static_chunks if static_max_score >= dynamic_max_score else dynamic_chunks
         
         if not chunks:
             # Generate fallback follow-up questions when no results found
@@ -333,10 +361,10 @@ async def search_documents(request: SearchRequest):
     start_time = datetime.now()
     
     try:
-        if not embedding_manager:
+        if not static_embedding_manager or not dynamic_embedding_manager:
             raise HTTPException(status_code=503, detail="Service not initialized")
         
-        if not embedding_manager.collection_exists():
+        if not static_embedding_manager.collection_exists() and not dynamic_embedding_manager.collection_exists():
             raise HTTPException(status_code=503, detail="No data available. Please create embeddings first.")
         
         logger.info(f"Processing search: '{request.query[:50]}...'")
@@ -347,20 +375,28 @@ async def search_documents(request: SearchRequest):
             filter_metadata = {"source": request.source_filter}
         
         # Search for chunks
-        chunks = embedding_manager.search_similar_chunks(
+        static_chunks = static_embedding_manager.search_similar_chunks(
             query=request.query,
             n_results=request.n_results,
             filter_metadata=filter_metadata
         )
         
-        # Format results
+        dynamic_chunks = dynamic_embedding_manager.search_similar_chunks(
+            query=request.query,
+            n_results=request.n_results,
+            filter_metadata=filter_metadata
+        )
+
+        # Combine and sort chunks by similarity score
+        all_chunks = static_chunks + dynamic_chunks
+        all_chunks.sort(key=lambda x: x['similarity_score'], reverse=True)
         results = [
             SearchResult(
                 content=chunk['content'],
                 metadata=chunk['metadata'],
                 similarity_score=chunk['similarity_score']
             )
-            for chunk in chunks
+            for chunk in all_chunks[:request.n_results]
         ]
         
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
@@ -382,10 +418,10 @@ async def search_documents(request: SearchRequest):
 async def get_collection_stats():
     """Get collection statistics"""
     try:
-        if not embedding_manager:
+        if not static_embedding_manager or not dynamic_embedding_manager:
             raise HTTPException(status_code=503, detail="Service not initialized")
         
-        stats = embedding_manager.get_collection_stats()
+        stats = static_embedding_manager.get_collection_stats()
         return {
             "collection_stats": stats,
             "timestamp": datetime.now().isoformat()

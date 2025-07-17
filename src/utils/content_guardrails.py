@@ -316,16 +316,22 @@ Be helpful and educational - err on the side of being permissive for genuine que
     
     # Synchronous wrapper for async methods
     def moderate_content(self, content: str) -> Tuple[bool, str, str]:
-        """Synchronous wrapper for content moderation"""
+        """
+        Synchronous wrapper for content moderation
+        """
         try:
-            # Run the async function
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self.moderate_content_with_ai(content))
-            loop.close()
-            return result
+            # Create a new event loop for this thread if one doesn't exist
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # Run the async moderation in the event loop
+            return loop.run_until_complete(self.moderate_content_with_ai(content))
         except Exception as e:
             logger.error(f"Content moderation error: {e}")
+            # Fallback to regex-based filtering on error
             return self._fallback_moderation(content)
 
 # Global instance

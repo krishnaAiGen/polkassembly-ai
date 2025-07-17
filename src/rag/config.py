@@ -21,6 +21,10 @@ class Config:
     CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "polkadot_embeddings")
     CHROMA_DYNAMIC_COLLECTION_NAME = os.getenv("CHROMA_DYNAMIC_COLLECTION_NAME", "polkadot_embeddings_dynamic")
     
+    # Search Configuration
+    SEARCH_STATIC_DATA = os.getenv("SEARCH_STATIC_DATA", "true").lower() == "true"
+    SEARCH_DYNAMIC_DATA = os.getenv("SEARCH_DYNAMIC_DATA", "true").lower() == "false"
+    
     # Mem0 Memory Configuration
     USE_MEM0 = os.getenv("USE_MEM0", "false").lower() in ("true", "1", "yes", "on")
     MEM0_API_KEY = os.getenv("MEM0_API_KEY", "")
