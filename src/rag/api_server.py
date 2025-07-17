@@ -264,7 +264,10 @@ async def query_chatbot(request: QueryRequest):
         
         # Use chunks from the collection with higher max similarity score
         chunks = static_chunks if static_max_score >= dynamic_max_score else dynamic_chunks
-        
+        which_chunk = "static" if static_max_score >= dynamic_max_score else "dynamic"
+        logger.info(f"Genrating response from {which_chunk}")
+
+
         if not chunks:
             # Generate fallback follow-up questions when no results found
             fallback_questions = [
@@ -313,7 +316,8 @@ async def query_chatbot(request: QueryRequest):
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         
         logger.info(f"Query processed in {processing_time:.2f}ms for user {request.user_id} (remaining: {remaining_requests})")
-        
+        print(qa_result['answer'])
+
         return QueryResponse(
             answer=qa_result['answer'],
             sources=sources,

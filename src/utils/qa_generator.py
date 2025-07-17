@@ -1,6 +1,7 @@
 import openai
 import logging
 from typing import List, Dict, Any, Optional
+import re
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
 from .content_guardrails import get_guardrails
@@ -139,7 +140,7 @@ Polkadot governance operates through several key mechanisms:
 
 The system balances community participation with technical expertise to ensure network security and growth.
 
-IMPORTANT: Always follow these formatting rules exactly. Never use markdown formatting symbols. Write in clean, professional text suitable for chatbot responses."""
+IMPORTANT: Always follow these formatting rules exactly. Write in clean, professional text suitable for chatbot responses."""
             
             # Create user prompt with memory context
             user_prompt_parts = []
@@ -163,7 +164,7 @@ IMPORTANT: Always follow these formatting rules exactly. Never use markdown form
             answer = response.choices[0].message.content.strip()
             
             # Clean up any markdown formatting that might have slipped through
-            answer = self._clean_markdown_formatting(answer)
+            # answer = self._clean_markdown_formatting(answer)
             
             # 🛡️ Sanitize the web search response
             answer = self.guardrails.sanitize_response(answer)
@@ -446,7 +447,7 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
             # 🛡️ Sanitize the AI response
             answer = self.guardrails.sanitize_response(answer)
             # Clean up any markdown formatting that might have slipped through
-            answer = self._clean_markdown_formatting(answer)
+            # answer = self._clean_markdown_formatting(answer)
             
             # Add assistant response to memory if memory is enabled
             if self.memory_manager and self.memory_manager.enabled:
@@ -512,16 +513,17 @@ You will be provided with context from Polkadot documentation and forum posts. P
 10. Avoid lengthy explanations - Focus on key points and essential information
 
 CRITICAL FORMATTING RULES - NEVER USE THESE SYMBOLS:
-❌ FORBIDDEN: **, *, ##, ###, ->, •, ~~, `, ```, [], (), <>, |
+❌ FORBIDDEN: **, *, ##, ###, •, ~~, `, ```, [], (), <>, |
 ❌ NO BOLD: **text** or __text__
 ❌ NO ITALICS: *text* or _text_
 ❌ NO HEADERS: # Header or ## Header
 ❌ NO CODE: `code` or ```code```
 ❌ NO LINKS: [text](url)
 
-✅ ALLOWED FORMATTING:
-- Use "1. 2. 3." for numbered lists
-- Use "- " (dash + space) for bullet points  
+✅ REQUIRED FORMATTING:
+- For step-by-step instructions, ALWAYS add a blank line after the introduction and between each step
+- Use "1. 2. 3." for numbered lists, with each step on a new line
+- Use "->" for bullet points, with each point on a new line
 - Use regular sentences with periods
 - Use paragraph breaks for separation
 - Write prices as "110,011 USD" not "$110,011"
@@ -531,17 +533,24 @@ EXAMPLE OF GOOD FORMATTING:
 To stake DOT tokens:
 
 1. Create and fund your wallet
+
 2. Access Polkassembly website
+
 3. Select reliable validators
+
 4. Nominate your chosen validators
+
 5. Monitor your staking rewards
 
 Key benefits:
+
 - Earn passive income through staking rewards
+
 - Support network security and decentralization
+
 - Participate in Polkadot governance decisions
 
-Remember: Answer as if you have direct expertise about Polkadot. Provide helpful, accurate, and CONCISE information in clean, professional text format suitable for enterprise deployment."""
+Remember: Answer as if you have direct expertise about Polkadot. Provide helpful, accurate, and CONCISE information in clean, professional text format suitable for enterprise deployment. ALWAYS add line breaks between steps for better readability."""
     
     def _create_user_prompt(self, query: str, context: str, memory_context: str = "") -> str:
         """Create the user prompt with query, context, and memory"""

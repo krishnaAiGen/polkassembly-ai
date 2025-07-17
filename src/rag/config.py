@@ -23,7 +23,7 @@ class Config:
     
     # Search Configuration
     SEARCH_STATIC_DATA = os.getenv("SEARCH_STATIC_DATA", "true").lower() == "true"
-    SEARCH_DYNAMIC_DATA = os.getenv("SEARCH_DYNAMIC_DATA", "true").lower() == "false"
+    SEARCH_DYNAMIC_DATA = os.getenv("SEARCH_DYNAMIC_DATA", "true").lower() == "true"
     
     # Mem0 Memory Configuration
     USE_MEM0 = os.getenv("USE_MEM0", "false").lower() in ("true", "1", "yes", "on")
