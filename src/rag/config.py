@@ -19,6 +19,7 @@ class Config:
     # ChromaDB Configuration
     CHROMA_PERSIST_DIRECTORY = os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")
     CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "polkadot_embeddings")
+    CHROMA_DYNAMIC_COLLECTION_NAME = os.getenv("CHROMA_DYNAMIC_COLLECTION_NAME", "polkadot_embeddings_dynamic")
     
     # Mem0 Memory Configuration
     USE_MEM0 = os.getenv("USE_MEM0", "false").lower() in ("true", "1", "yes", "on")

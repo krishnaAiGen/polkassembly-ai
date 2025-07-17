@@ -82,6 +82,7 @@ def load_dynamic_data(data_dir: str) -> List[Dict[str, Any]]:
                     'index': item.get('index', ''),
                     'createdAt': item.get('createdAt', ''),
                     'source': 'polkassembly',
+                    'data_type': 'dynamic',  # Add this to distinguish dynamic data
                     'file_path': str(file_path)
                 }
                 
@@ -119,7 +120,7 @@ def create_dynamic_embeddings(
         # Use config values if not provided
         chunk_size = chunk_size or Config.CHUNK_SIZE
         chunk_overlap = chunk_overlap or Config.CHUNK_OVERLAP
-        collection_name = collection_name or Config.CHROMA_COLLECTION_NAME + "_dynamic"
+        collection_name = collection_name or Config.CHROMA_DYNAMIC_COLLECTION_NAME
         
         logger.info(f"Creating embeddings for dynamic data in {data_dir}")
         logger.info(f"Using collection name: {collection_name}")
@@ -133,8 +134,12 @@ def create_dynamic_embeddings(
         embedding_manager = EmbeddingManager(
             openai_api_key=Config.OPENAI_API_KEY,
             collection_name=collection_name,
-            chroma_persist_directory=Config.CHROMA_PERSIST_DIRECTORY + "_dynamic"
+            chroma_persist_directory=Config.CHROMA_PERSIST_DIRECTORY  # Remove "_dynamic" suffix
         )
+        
+        # Clear existing collection to start fresh
+        logger.info("Clearing existing collection...")
+        embedding_manager.clear_collection()
         
         # Load documents
         documents = load_dynamic_data(data_dir)
