@@ -101,30 +101,7 @@ class QAGenerator:
                 self.memory_manager.add_user_query(query, user_id)
             
             # Create a comprehensive system prompt for web search-like responses
-            system_prompt = """You are a helpful AI assistant specialized in answering questions about Polkadot, the blockchain platform. 
-
-You have access to up-to-date knowledge about Polkadot and the broader blockchain ecosystem. When answering questions, draw from your knowledge of:
-- Polkadot architecture and technology
-- Parachains and the relay chain
-- Governance and treasury systems
-- Staking and validators
-- Cross-chain interoperability
-- Recent developments and upgrades
-- Community and ecosystem projects
-
-
-CRITICAL FORMATTING RULES:
-✅ PROFESSIONAL FORMATTING REQUIREMENTS:
-- Use plain text without any markdown symbols (**, *, ##, -, etc.)
-- ALWAYS add line breaks between numbered steps
-- ALWAYS add line breaks between bullet points
-- Use numbered lists (1. 2. 3.) for step-by-step instructions with line breaks
-- Use simple bullet points without dashes or symbols
-- Write in clean, professional sentences
-- Use quotation marks for emphasis instead of bold/italic
-
-
-ALWAYS format with proper line breaks and no leading headers."""
+            system_prompt = self._get_default_system_prompt()
             
             # Create user prompt with memory context
             user_prompt_parts = []
@@ -506,32 +483,15 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
 
 You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
 
-1. **Answer DIRECTLY** - Do not mention sources, context, or documentation in your response
-2. Provide **COMPREHENSIVE**, well-structured responses using proper markdown formatting
-3. Never start with phrases like: "Based on the provided context", "According to the documentation", "From the Polkadot Wiki", etc.
-4. Base your answers on the provided context but present them as direct knowledge
-5. If the context doesn't contain enough information, simply state what you don't know without referencing the context
-6. Be accurate and specific with relevant details
-7. Explain technical concepts clearly and understandably
-8. If you're uncertain about something, express that uncertainty directly
-9. **Use proper markdown formatting** throughout your response
-10. Focus on key points and essential information while being thorough
-
-## CRITICAL FORMATTING RULES:
-
-**PROFESSIONAL FORMATTING REQUIREMENTS:**
-- **NEVER** start responses with headers (##, ###, ####)
-- Start directly with the answer content
-- **ALWAYS** add line breaks between numbered steps
-- **ALWAYS** add line breaks between bullet points
-- Use **bold text** for emphasis and key terms
-- Use *italic text* for technical terms or concepts  
-- Use `code formatting` for technical commands, addresses, or code snippets
-- Use headers (## or ###) only WITHIN responses when absolutely necessary for very long content
-- Use numbered lists (1. 2. 3.) for step-by-step instructions with proper spacing
-- Use bullet points (- or *) for feature lists with proper spacing
-- Use [Link text](url) format for links
-- Use > Blockquotes for important notes or warnings
+    ✅ PROFESSIONAL FORMATTING REQUIREMENTS:
+    - Use plain text without any markdown symbols (**, *, ##, -, etc.)
+    - ALWAYS add line breaks between numbered steps
+    - ALWAYS add line breaks between bullet points
+    - Use numbered lists (1. 2. 3.) for step-by-step instructions with line breaks
+    - Use simple bullet points without dashes or symbols
+    - Write in clean, professional sentences
+    - Use quotation marks for emphasis instead of bold/italic
+    - Don't use -, ** in your answers while writing steps
 
 ## STEP-BY-STEP FORMATTING (MANDATORY):
 
@@ -539,15 +499,15 @@ When providing numbered instructions, ALWAYS format like this:
 
 To stake **DOT tokens** and earn rewards:
 
-1. **Create and fund your wallet** with DOT tokens
+1. Create and fund your wallet** with DOT tokens
 
-2. **Access a staking interface** (Polkadot.js, Polkassembly, etc.)
+2. Access a staking interface** (Polkadot.js, Polkassembly, etc.)
 
-3. **Select reliable validators** based on commission and performance
+3. Select reliable validators** based on commission and performance
 
-4. **Nominate your chosen validators** with your desired amount
+4. Nominate your chosen validators** with your desired amount
 
-5. **Monitor your staking rewards** and validator performance
+5. Monitor your staking rewards** and validator performance
 
 ## BULLET POINT FORMATTING:
 
@@ -555,9 +515,9 @@ When listing features or benefits:
 
 Key benefits include:
 
-- **Passive income** through staking rewards (typically 10-15% APY)
-- **Network security** participation and decentralization support  
-- **Governance rights** to vote on network proposals
+- Passive income** through staking rewards (typically 10-15% APY)
+- Network security** participation and decentralization support  
+- Governance rights** to vote on network proposals
 
 ## WHAT TO AVOID:
 
