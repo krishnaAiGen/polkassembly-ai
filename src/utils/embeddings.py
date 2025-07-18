@@ -6,6 +6,7 @@ import time
 from typing import List, Dict, Any, Optional, Tuple
 from chromadb.config import Settings
 import numpy as np
+from src.rag.config import Config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -181,30 +182,64 @@ class EmbeddingManager:
             List of similar chunks with content, metadata, and similarity scores
         """
         try:
+            # If both search flags are false, return empty results
+            if not Config.SEARCH_STATIC_DATA and not Config.SEARCH_DYNAMIC_DATA:
+                logger.info("Both static and dynamic search are disabled")
+                return []
+
             # Generate embedding for the query
             query_embedding = self.generate_embeddings([query])[0]
             
-            # Search in ChromaDB
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=n_results,
-                where=filter_metadata,
-                include=["documents", "metadatas", "distances"]
-            )
+            results = []
             
-            # Format results
-            formatted_results = []
-            if results['documents'] and len(results['documents']) > 0:
-                for i in range(len(results['documents'][0])):
-                    result = {
-                        'content': results['documents'][0][i],
-                        'metadata': results['metadatas'][0][i],
-                        'similarity_score': 1.0 - results['distances'][0][i]  # Convert distance to similarity
-                    }
-                    formatted_results.append(result)
+            # Search in static collection if enabled
+            if Config.SEARCH_STATIC_DATA and self.collection_name == Config.CHROMA_COLLECTION_NAME:
+                static_results = self.collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=n_results,
+                    where=filter_metadata,
+                    include=["documents", "metadatas", "distances"]
+                )
+                if static_results['documents'] and len(static_results['documents']) > 0:
+                    for i in range(len(static_results['documents'][0])):
+                        result = {
+                            'content': static_results['documents'][0][i],
+                            'metadata': static_results['metadatas'][0][i],
+                            'similarity_score': 1.0 - static_results['distances'][0][i],
+                            'source': 'static'
+                        }
+                        results.append(result)
+                    logger.info(f"Found {len(results)} chunks from static data")
+
+            # Search in dynamic collection if enabled
+            if Config.SEARCH_DYNAMIC_DATA and self.collection_name == Config.CHROMA_DYNAMIC_COLLECTION_NAME:
+                dynamic_results = self.collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=n_results,
+                    where=filter_metadata,
+                    include=["documents", "metadatas", "distances"]
+                )
+                if dynamic_results['documents'] and len(dynamic_results['documents']) > 0:
+                    for i in range(len(dynamic_results['documents'][0])):
+                        result = {
+                            'content': dynamic_results['documents'][0][i],
+                            'metadata': dynamic_results['metadatas'][0][i],
+                            'similarity_score': 1.0 - dynamic_results['distances'][0][i],
+                            'source': 'dynamic'
+                        }
+                        results.append(result)
+                    logger.info(f"Found {len(results)} chunks from dynamic data")
+
+            # Sort all results by similarity score and take top n_results
+            results.sort(key=lambda x: x['similarity_score'], reverse=True)
+            results = results[:n_results]
+
+            # Log the sources of returned results
+            static_count = sum(1 for r in results if r['source'] == 'static')
+            dynamic_count = sum(1 for r in results if r['source'] == 'dynamic')
+            logger.info(f"Returning {static_count} static and {dynamic_count} dynamic results")
             
-            logger.info(f"Found {len(formatted_results)} similar chunks for query: '{query[:50]}...'")
-            return formatted_results
+            return results
             
         except Exception as e:
             logger.error(f"Error searching similar chunks: {e}")
