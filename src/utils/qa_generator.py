@@ -2,12 +2,18 @@ import openai
 import logging
 from typing import List, Dict, Any, Optional
 import re
+from .web_search import search_tavily
+from dotenv import load_dotenv
+import os
+import numpy as np
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
 from .content_guardrails import get_guardrails
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 class QAGenerator:
     """Generate answers using OpenAI based on retrieved document chunks"""
@@ -80,7 +86,7 @@ class QAGenerator:
         
         return ''.join(context_parts)
     
-    def generate_answer_with_web_search(self, query: str, user_id: str = "default_user") -> Dict[str, Any]:
+    async def generate_answer_with_web_search(self, query: str, user_id: str = "default_user") -> Dict[str, Any]:
         """
         Generate answer using OpenAI with web search-like knowledge
         
@@ -110,20 +116,31 @@ class QAGenerator:
             
             user_prompt_parts.append(f"Question about Polkadot: {query}")
             user_prompt = "\n\n".join(user_prompt_parts)
-            
-            # Generate response using OpenAI with enhanced model
-            response = self.client.chat.completions.create(
-                model="gpt-4o" if "gpt-4" in self.model or self.model == "gpt-3.5-turbo" else self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,  # Lower temperature for more factual responses
-                max_tokens=self.max_tokens
-            )
-            
-            answer = response.choices[0].message.content
-            answer = self.remove_double_asterisks(answer)
+
+            if os.getenv("WEB_SEARCH"):
+                try:
+                    #do the web search first
+                    answer, sources = await search_tavily(query)
+                except:
+                    #fall back to openAI
+                    logger.info("Web search failed, falling back to OpenAI")
+                    response = self.client.chat.completions.create(
+                        model="gpt-4o" if "gpt-4" in self.model or self.model == "gpt-3.5-turbo" else self.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.1,  # Lower temperature for more factual responses
+                        max_tokens=self.max_tokens
+                    )
+                    
+                    answer = response.choices[0].message.content
+                    answer = self.remove_double_asterisks(answer)
+                    sources = []  # Initialize empty sources for fallback
+            else:
+                #no web search
+                answer = "I couldn't find relevant information in the Polkadot knowledge base to answer your question based on web-search. Please try rephrasing your query or ask about a different topic related to Polkadot."
+                sources = []
             
             # Apply content guardrails but preserve markdown formatting
             # answer = self.guardrails.sanitize_response(answer)
@@ -133,26 +150,29 @@ class QAGenerator:
                 self.memory_manager.add_assistant_response(answer, user_id)
             
             # Create web search-style sources
-            sources = [
-                {
-                    'title': 'Polkadot Knowledge Base',
-                    'url': 'https://polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                },
-                {
-                    'title': 'Polkadot Wiki',
-                    'url': 'https://wiki.polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                },
-                {
-                    'title': 'Polkadot Documentation',
-                    'url': 'https://docs.polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                }
-            ]
+            if len(sources) > 0:
+                sources = sources[:np.random.randint(1, 4)]
+            else:
+                sources = [
+                    {
+                        'title': 'Polkadot Knowledge Base',
+                        'url': 'https://polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    },
+                    {
+                        'title': 'Polkadot Wiki',
+                        'url': 'https://wiki.polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    },
+                    {
+                        'title': 'Polkadot Documentation',
+                        'url': 'https://docs.polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    }
+                ]
             
             # Generate follow-up questions for web search results
             follow_up_questions = self._get_fallback_follow_ups(query)
@@ -304,7 +324,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
     def remove_double_asterisks(self, text):
         return text.replace("**", "").replace("-", "")
 
-    def generate_answer(self, 
+    async def generate_answer(self, 
                        query: str, 
                        chunks: List[Dict[str, Any]], 
                        custom_prompt: Optional[str] = None,
@@ -376,7 +396,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             # If no sufficient context and web search is enabled, use web search
             if not has_sufficient_context and self.enable_web_search:
                 logger.info("Insufficient local context, falling back to web search")
-                return self.generate_answer_with_web_search(query)
+                return await self.generate_answer_with_web_search(query)
             
             # If no context at all, return appropriate message
             if not context.strip():
@@ -464,7 +484,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             # If local generation fails and web search is enabled, try web search as fallback
             if self.enable_web_search:
                 logger.info("Local generation failed, trying web search fallback")
-                return self.generate_answer_with_web_search(query, user_id)
+                return await self.generate_answer_with_web_search(query, user_id)
             
             return {
                 'answer': "I encountered an error while generating the answer. Please try again.",

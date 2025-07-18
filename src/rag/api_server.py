@@ -293,7 +293,7 @@ async def query_chatbot(request: QueryRequest):
             )
         
         # Generate answer using QA generator
-        qa_result = qa_generator.generate_answer(
+        qa_result = await qa_generator.generate_answer(
             query=request.question,
             chunks=chunks,
             custom_prompt=request.custom_prompt,
