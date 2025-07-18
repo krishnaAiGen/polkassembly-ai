@@ -112,35 +112,19 @@ You have access to up-to-date knowledge about Polkadot and the broader blockchai
 - Recent developments and upgrades
 - Community and ecosystem projects
 
-CRITICAL FORMATTING RULES - NEVER USE THESE SYMBOLS:
-❌ FORBIDDEN: **, *, ##, ###, ->, •, ~~, `, ```, [], (), <>, |
-❌ NO BOLD: **text** or __text__
-❌ NO ITALICS: *text* or _text_
-❌ NO HEADERS: # Header or ## Header
-❌ NO CODE: `code` or ```code```
-❌ NO LINKS: [text](url)
 
-✅ REQUIRED FORMATTING:
-- Use "1. 2. 3." for numbered lists only
-- Use "- " (dash + space) for bullet points only
-- Use regular sentences with periods
-- Use paragraph breaks for separation
-- Write prices as "110,011 USD" not "$110,011"
-- Use quotation marks for emphasis: "important term"
-- Keep responses CONCISE and PROFESSIONAL
+CRITICAL FORMATTING RULES:
+✅ PROFESSIONAL FORMATTING REQUIREMENTS:
+- Use plain text without any markdown symbols (**, *, ##, -, etc.)
+- ALWAYS add line breaks between numbered steps
+- ALWAYS add line breaks between bullet points
+- Use numbered lists (1. 2. 3.) for step-by-step instructions with line breaks
+- Use simple bullet points without dashes or symbols
+- Write in clean, professional sentences
+- Use quotation marks for emphasis instead of bold/italic
 
-EXAMPLE OF CORRECT FORMAT:
-Polkadot governance operates through several key mechanisms:
 
-1. Token holders can submit proposals for network changes
-2. Voting uses conviction-based weighting system
-3. Council members represent passive stakeholders
-4. Technical committee handles emergency proposals
-5. Treasury funds ecosystem development projects
-
-The system balances community participation with technical expertise to ensure network security and growth.
-
-IMPORTANT: Always follow these formatting rules exactly. Write in clean, professional text suitable for chatbot responses."""
+ALWAYS format with proper line breaks and no leading headers."""
             
             # Create user prompt with memory context
             user_prompt_parts = []
@@ -161,13 +145,11 @@ IMPORTANT: Always follow these formatting rules exactly. Write in clean, profess
                 max_tokens=self.max_tokens
             )
             
-            answer = response.choices[0].message.content.strip()
+            answer = response.choices[0].message.content
+            answer = self.remove_double_asterisks(answer)
             
-            # Clean up any markdown formatting that might have slipped through
-            # answer = self._clean_markdown_formatting(answer)
-            
-            # 🛡️ Sanitize the web search response
-            answer = self.guardrails.sanitize_response(answer)
+            # Apply content guardrails but preserve markdown formatting
+            # answer = self.guardrails.sanitize_response(answer)
             
             # Add assistant response to memory if memory is enabled
             if self.memory_manager and self.memory_manager.enabled:
@@ -267,27 +249,35 @@ IMPORTANT: Always follow these formatting rules exactly. Write in clean, profess
         Returns:
             Dictionary with introduction answer and metadata
         """
-        introduction = """Hello! I'm the Polkassembly AI Assistant!
+        introduction = """Hello! I'm the **Polkassembly AI Assistant**! 👋
 
-What is Polkassembly?
-Polkassembly is the leading governance platform for Polkadot and Kusama ecosystems, designed to make blockchain governance accessible and transparent.
+**Polkassembly** is the leading governance platform for **Polkadot** and **Kusama** ecosystems, designed to make blockchain governance accessible and transparent.
 
-Key Features:
-- Governance Tracking: Monitor proposals, referenda, and voting
-- Democracy Tools: Participate in on-chain governance decisions  
-- Analytics Dashboard: View governance statistics and trends
-- Community Hub: Discuss proposals with other community members
-- Voting Interface: Easy-to-use voting tools for token holders
+**Key Features:**
 
-Useful Links:
-- Main Platform: https://polkassembly.io
-- Polkadot Governance: https://polkadot.polkassembly.io
-- Kusama Governance: https://kusama.polkassembly.io
-- Documentation: https://docs.polkassembly.io
-- GitHub: https://github.com/Premiurly/polkassembly
+- **Governance Tracking** - Monitor proposals, referenda, and voting activity
 
-What can I help you with?
-Ask me about Polkadot governance, parachains, staking, treasury proposals, referenda, or any other Polkadot/Kusama related topics!"""
+- **Democracy Tools** - Participate in on-chain governance decisions with easy voting interfaces
+
+- **Analytics Dashboard** - View comprehensive governance analytics and voting patterns
+
+- **Community Hub** - Discuss proposals and engage with other community members
+
+**Useful Links:**
+
+- **Main Platform**: [polkassembly.io](https://polkassembly.io)
+
+- **Polkadot Governance**: [polkadot.polkassembly.io](https://polkadot.polkassembly.io)
+
+- **Kusama Governance**: [kusama.polkassembly.io](https://kusama.polkassembly.io)
+
+- **Documentation**: [docs.polkassembly.io](https://docs.polkassembly.io)
+
+- **GitHub**: [github.com/Premiurly/polkassembly](https://github.com/Premiurly/polkassembly)
+
+**What can I help you with?**
+
+Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposals*, *referenda*, or any other **Polkadot/Kusama** related topics! 🚀"""
 
         sources = [
             {
@@ -333,6 +323,9 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
             'chunks_used': 0,
             'search_method': 'greeting_response'
         }
+    
+    def remove_double_asterisks(self, text):
+        return text.replace("**", "").replace("-", "")
 
     def generate_answer(self, 
                        query: str, 
@@ -341,6 +334,16 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
                        user_id: str = "default_user") -> Dict[str, Any]:
         """
         Generate an answer based on the query and retrieved chunks, with web search fallback
+
+        CRITICAL FORMATTING RULES:
+        ✅ PROFESSIONAL FORMATTING REQUIREMENTS:
+        - Use plain text without any markdown symbols (**, *, ##, -, etc.)
+        - ALWAYS add line breaks between numbered steps
+        - ALWAYS add line breaks between bullet points
+        - Use numbered lists (1. 2. 3.) for step-by-step instructions with line breaks
+        - Use simple bullet points without dashes or symbols
+        - Write in clean, professional sentences
+        - Use quotation marks for emphasis instead of bold/italic
         
         Args:
             query: User's question
@@ -351,7 +354,7 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
             Dictionary with answer, sources, and metadata
         """
         try:
-            # 🛡️ AI-powered content moderation
+            # AI-powered content moderation
             is_safe, category, helpful_response = self.guardrails.moderate_content(query)
             
             if not is_safe:
@@ -442,12 +445,14 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
                 max_tokens=self.max_tokens
             )
             
-            answer = response.choices[0].message.content.strip()
-            
-            # 🛡️ Sanitize the AI response
-            answer = self.guardrails.sanitize_response(answer)
-            # Clean up any markdown formatting that might have slipped through
-            # answer = self._clean_markdown_formatting(answer)
+            # answer = response.choices[0].message.content.strip()
+            answer = response.choices[0].message.content
+            print("--------answer without strip-------\n", answer)
+            answer = self.remove_double_asterisks(answer)
+
+            # Apply content guardrails but preserve markdown formatting
+            # answer = self.guardrails.sanitize_response(answer)
+            # print("-----answer after guardrail----\n", answer)
             
             # Add assistant response to memory if memory is enabled
             if self.memory_manager and self.memory_manager.enabled:
@@ -501,56 +506,65 @@ Ask me about Polkadot governance, parachains, staking, treasury proposals, refer
 
 You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
 
-1. Answer DIRECTLY - Do not mention sources, context, or documentation in your response
-2. Provide CONCISE, SUMMARIZED responses - Keep answers brief but comprehensive
+1. **Answer DIRECTLY** - Do not mention sources, context, or documentation in your response
+2. Provide **COMPREHENSIVE**, well-structured responses using proper markdown formatting
 3. Never start with phrases like: "Based on the provided context", "According to the documentation", "From the Polkadot Wiki", etc.
 4. Base your answers on the provided context but present them as direct knowledge
 5. If the context doesn't contain enough information, simply state what you don't know without referencing the context
 6. Be accurate and specific with relevant details
-7. Explain technical concepts in a clear and understandable way
+7. Explain technical concepts clearly and understandably
 8. If you're uncertain about something, express that uncertainty directly
-9. Structure your response professionally using clean text formatting
-10. Avoid lengthy explanations - Focus on key points and essential information
+9. **Use proper markdown formatting** throughout your response
+10. Focus on key points and essential information while being thorough
 
-CRITICAL FORMATTING RULES - NEVER USE THESE SYMBOLS:
-❌ FORBIDDEN: **, *, ##, ###, •, ~~, `, ```, [], (), <>, |
-❌ NO BOLD: **text** or __text__
-❌ NO ITALICS: *text* or _text_
-❌ NO HEADERS: # Header or ## Header
-❌ NO CODE: `code` or ```code```
-❌ NO LINKS: [text](url)
+## CRITICAL FORMATTING RULES:
 
-✅ REQUIRED FORMATTING:
-- For step-by-step instructions, ALWAYS add a blank line after the introduction and between each step
-- Use "1. 2. 3." for numbered lists, with each step on a new line
-- Use "->" for bullet points, with each point on a new line
-- Use regular sentences with periods
-- Use paragraph breaks for separation
-- Write prices as "110,011 USD" not "$110,011"
-- Use quotation marks for emphasis: "important term"
+**PROFESSIONAL FORMATTING REQUIREMENTS:**
+- **NEVER** start responses with headers (##, ###, ####)
+- Start directly with the answer content
+- **ALWAYS** add line breaks between numbered steps
+- **ALWAYS** add line breaks between bullet points
+- Use **bold text** for emphasis and key terms
+- Use *italic text* for technical terms or concepts  
+- Use `code formatting` for technical commands, addresses, or code snippets
+- Use headers (## or ###) only WITHIN responses when absolutely necessary for very long content
+- Use numbered lists (1. 2. 3.) for step-by-step instructions with proper spacing
+- Use bullet points (- or *) for feature lists with proper spacing
+- Use [Link text](url) format for links
+- Use > Blockquotes for important notes or warnings
 
-EXAMPLE OF GOOD FORMATTING:
-To stake DOT tokens:
+## STEP-BY-STEP FORMATTING (MANDATORY):
 
-1. Create and fund your wallet
+When providing numbered instructions, ALWAYS format like this:
 
-2. Access Polkassembly website
+To stake **DOT tokens** and earn rewards:
 
-3. Select reliable validators
+1. **Create and fund your wallet** with DOT tokens
 
-4. Nominate your chosen validators
+2. **Access a staking interface** (Polkadot.js, Polkassembly, etc.)
 
-5. Monitor your staking rewards
+3. **Select reliable validators** based on commission and performance
 
-Key benefits:
+4. **Nominate your chosen validators** with your desired amount
 
-- Earn passive income through staking rewards
+5. **Monitor your staking rewards** and validator performance
 
-- Support network security and decentralization
+## BULLET POINT FORMATTING:
 
-- Participate in Polkadot governance decisions
+When listing features or benefits:
 
-Remember: Answer as if you have direct expertise about Polkadot. Provide helpful, accurate, and CONCISE information in clean, professional text format suitable for enterprise deployment. ALWAYS add line breaks between steps for better readability."""
+Key benefits include:
+
+- **Passive income** through staking rewards (typically 10-15% APY)
+- **Network security** participation and decentralization support  
+- **Governance rights** to vote on network proposals
+
+## WHAT TO AVOID:
+
+NEVER format like this (bad example):
+"### How to stake DOT: 1. Create wallet 2. Select validators 3. Nominate tokens"
+
+**Remember**: Answer as if you have direct expertise about Polkadot. Start directly with content, use proper line breaks between steps, and provide helpful, accurate, and **professionally formatted** information."""
     
     def _create_user_prompt(self, query: str, context: str, memory_context: str = "") -> str:
         """Create the user prompt with query, context, and memory"""
@@ -566,7 +580,7 @@ Remember: Answer as if you have direct expertise about Polkadot. Provide helpful
         
         prompt_parts.append(f"Question: {query}")
         
-        prompt_parts.append("Answer the question directly without mentioning the context, sources, documentation, or previous conversations. Do not start with phrases like \"Based on the provided context\", \"According to the documentation\", \"From the Polkadot Wiki\", \"From our previous conversation\", etc. Simply provide the answer as if you have direct knowledge of the topic.\n\nIMPORTANT: Use ONLY clean text formatting. NO markdown symbols like **, *, ##, •, etc. Use numbered lists (1. 2. 3.) and simple dashes (-) only.")
+        prompt_parts.append("Answer the question directly without mentioning the context, sources, documentation, or previous conversations. Do not start with phrases like \"Based on the provided context\", \"According to the documentation\", \"From the Polkadot Wiki\", \"From our previous conversation\", etc. Simply provide the answer as if you have direct knowledge of the topic.\n\nCRITICAL FORMATTING REQUIREMENTS:\n- NEVER start with headers (##, ###)\n- Start directly with answer content\n- ALWAYS add line breaks between numbered steps (1. step one [LINE BREAK] 2. step two [LINE BREAK])\n- ALWAYS add line breaks between bullet points\n- Use professional markdown formatting throughout")
         
         return "\n\n".join(prompt_parts)
     
@@ -597,7 +611,7 @@ Remember: Answer as if you have direct expertise about Polkadot. Provide helpful
             if len(sources) >= 2 and any(s['url'] for s in sources):
                 break
         
-        # 🛡️ Apply guardrails to filter sources (removes subsquare, prioritizes preferred)
+        # Apply guardrails to filter sources (removes subsquare, prioritizes preferred)
         filtered_sources = self.guardrails.filter_sources(sources)
         
         return filtered_sources
@@ -626,13 +640,20 @@ Remember: Answer as if you have direct expertise about Polkadot. Provide helpful
             # Create a condensed context
             context = self.create_context_from_chunks(chunks, max_context_length=2000)
             
-            summary_prompt = """Please provide a brief summary of the following Polkadot-related information:
+            summary_prompt = """Please provide a brief summary of the following Polkadot-related information using proper markdown formatting.
+
+IMPORTANT FORMATTING RULES:
+- DO NOT start with headers (##, ###)
+- Start directly with the summary content
+- Use **bold** for key terms, *italics* for technical concepts
+- Add line breaks between bullet points if used
+- Keep it concise and professional
 
 {context}
 
 Summary:"""
             
-            response = openai.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "user", "content": summary_prompt.format(context=context)}
@@ -783,39 +804,3 @@ Format: Return only the 3 questions, one per line, without numbers or bullets.""
                 "What are the main benefits of using Polkadot?",
                 "How can I get started with Polkadot?"
             ]
-    
-    def _clean_markdown_formatting(self, text: str) -> str:
-        """
-        Clean up markdown formatting from text to ensure clean chatbot responses
-        
-        Args:
-            text: Input text that may contain markdown formatting
-            
-        Returns:
-            Cleaned text without markdown formatting
-        """
-        import re
-        
-        # Remove bold formatting
-        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
-        text = re.sub(r'__(.*?)__', r'\1', text)
-        
-        # Remove italic formatting
-        text = re.sub(r'\*(.*?)\*', r'\1', text)
-        text = re.sub(r'_(.*?)_', r'\1', text)
-        
-        # Remove headers
-        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-        
-        # Remove code blocks
-        text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
-        text = re.sub(r'`([^`]+)`', r'\1', text)
-        
-        # Remove links but keep the text
-        text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-        
-        # Remove other markdown symbols
-        text = re.sub(r'[•→~]', '-', text)
-        text = re.sub(r'[<>|]', '', text)
-        
-        return text.strip() 
