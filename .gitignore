@@ -144,3 +144,6 @@ Thumbs.db
 
 #redis file
 *.rdb
+
+#md files
+*.md
