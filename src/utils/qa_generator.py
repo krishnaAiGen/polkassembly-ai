@@ -135,6 +135,10 @@ class QAGenerator:
                     )
                     
                     answer = response.choices[0].message.content
+                    
+                    # Clean any example.com URLs from the response
+                    answer = self.clean_example_urls(answer)
+                    
                     # answer = self.remove_double_asterisks(answer)
                     sources = []  # Initialize empty sources for fallback
             else:
@@ -323,6 +327,23 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
     
     def remove_double_asterisks(self, text):
         return text.replace("**", "").replace("-", "")
+    
+    def clean_example_urls(self, text):
+        """
+        Remove any lines containing example.com URLs from the response
+        """
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            # Skip lines that contain example.com
+            if 'example.com' not in line:
+                cleaned_lines.append(line)
+            else:
+                # Log when we remove a line for debugging
+                logger.info(f"Removed example.com line: {line.strip()}")
+        
+        return '\n'.join(cleaned_lines)
 
     async def generate_answer(self, 
                        query: str, 
@@ -448,6 +469,11 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             # answer = response.choices[0].message.content.strip()
             answer = response.choices[0].message.content
             print("--------answer without strip-------\n", answer)
+            
+            # Clean any example.com URLs from the response
+            answer = self.clean_example_urls(answer)
+            print("--------answer after cleaning example.com URLs-------\n", answer)
+            
             # answer = self.remove_double_asterisks(answer)
 
             # Apply content guardrails but preserve markdown formatting
@@ -551,7 +577,8 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
 
             NEVER format like this (bad example):
             "### How to stake DOT: 1. Create wallet 2. Select validators 3. Nominate tokens"
-
+            "Never use https://example.com/image1.jpg or https://example.com/image2.jpg, in your output, if there is such, then remove it in the output"
+            
             **Remember**: Answer as if you have direct expertise about Polkadot. Start directly with content, use proper line breaks between steps, and provide helpful, accurate, and **professionally formatted** information."""
                 
     def _create_user_prompt(self, query: str, context: str, memory_context: str = "") -> str:
@@ -651,6 +678,10 @@ Summary:"""
             )
             
             summary = response.choices[0].message.content.strip()
+            
+            # Clean any example.com URLs from the summary
+            summary = self.clean_example_urls(summary)
+            
             return summary
             
         except Exception as e:
@@ -720,6 +751,10 @@ Format: Return only the 3 questions, one per line, without numbers or bullets.""
             )
             
             follow_up_text = response.choices[0].message.content.strip()
+            
+            # Clean any example.com URLs from the follow-up questions
+            follow_up_text = self.clean_example_urls(follow_up_text)
+            
             follow_up_questions = [q.strip() for q in follow_up_text.split('\n') if q.strip()]
             
             # Ensure we have 2-3 questions, fallback if needed
