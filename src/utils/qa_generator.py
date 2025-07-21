@@ -8,7 +8,7 @@ import os
 import numpy as np
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
-from .content_guardrails import get_guardrails
+from ..guardrail.content_guardrails import get_guardrails
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -330,18 +330,33 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
     
     def clean_example_urls(self, text):
         """
-        Remove any lines containing example.com URLs from the response
+        Remove any lines containing links that don't contain the polkassembly S3 bucket URL.
+        Only allows links from https://polkassembly-ai.s3.us-east-1.amazonaws.com
         """
+        import re
+        
         lines = text.split('\n')
         cleaned_lines = []
         
+        # Pattern to match image markdown: ![alt text](url)
+        image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+        
         for line in lines:
-            # Skip lines that contain example.com
-            if 'example.com' not in line:
+            should_include_line = True
+            
+            # Check if line contains image markdown
+            image_matches = re.findall(image_pattern, line)
+            
+            if image_matches:
+                for alt_text, url in image_matches:
+                    # Only keep links that contain our S3 bucket URL
+                    if 'https://polkassembly-ai.s3.us-east-1.amazonaws.com' not in url:
+                        should_include_line = False
+                        logger.info(f"Removed image line with invalid URL: {line.strip()}")
+                        break
+            
+            if should_include_line:
                 cleaned_lines.append(line)
-            else:
-                # Log when we remove a line for debugging
-                logger.info(f"Removed example.com line: {line.strip()}")
         
         return '\n'.join(cleaned_lines)
 
@@ -373,20 +388,20 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
         """
         try:
             # AI-powered content moderation
-            is_safe, category, helpful_response = self.guardrails.moderate_content(query)
+            # is_safe, category, helpful_response = self.guardrails.moderate_content(query)
             
-            if not is_safe:
-                logger.warning(f"Unsafe query detected - Category: {category}")
-                return {
-                    'answer': helpful_response,
-                    'sources': [],
-                    'confidence': 0.0,
-                    'follow_up_questions': self._get_helpful_follow_ups(),
-                    'context_used': False,
-                    'model_used': self.model,
-                    'chunks_used': 0,
-                    'search_method': f'blocked_{category}'
-                }
+            # if not is_safe:
+            #     logger.warning(f"Unsafe query detected - Category: {category}")
+            #     return {
+            #         'answer': helpful_response,
+            #         'sources': [],
+            #         'confidence': 0.0,
+            #         'follow_up_questions': self._get_helpful_follow_ups(),
+            #         'context_used': False,
+            #         'model_used': self.model,
+            #         'chunks_used': 0,
+            #         'search_method': f'blocked_{category}'
+            #     }
             
             # Check if this is a greeting message
             if self._is_greeting_message(query):

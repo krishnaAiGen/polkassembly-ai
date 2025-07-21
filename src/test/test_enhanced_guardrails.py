@@ -251,7 +251,7 @@ class TestGuardrailsIntegration(unittest.TestCase):
     
     def test_get_guardrails_singleton(self):
         """Test that get_guardrails returns singleton instance"""
-        from src.utils.content_guardrails import get_guardrails
+        from src.guardrail.content_guardrails import get_guardrails
         
         # Get two instances with same key
         guardrails1 = get_guardrails("test-key")

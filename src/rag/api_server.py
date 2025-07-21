@@ -24,8 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from .config import Config
 from ..utils.embeddings import EmbeddingManager
 from ..utils.qa_generator import QAGenerator
-from ..utils.content_guardrails import get_guardrails
+from ..guardrail.content_guardrails import get_guardrails
 from ..utils.rate_limiter import check_rate_limit, get_client_stats
+from .chunks_reranker import rerank_static_chunks
 
 # Configure logging
 logging.basicConfig(
@@ -223,27 +224,28 @@ async def query_chatbot(request: QueryRequest):
             )
         
         # 🛡️ AI-powered content moderation
-        is_safe, category, helpful_response = content_guardrails.moderate_content(request.question)
+        # is_safe, category, helpful_response = content_guardrails.moderate_content(request.question)
         
-        if not is_safe:
-            logger.warning(f"Unsafe query blocked - Category: {category}")
-            return QueryResponse(
-                answer=helpful_response,
-                sources=[],
-                follow_up_questions=[
-                    "How does Polkadot's governance system work?",
-                    "What are the benefits of staking DOT tokens?",
-                    "How do parachains communicate with each other?"
-                ],
-                remaining_requests=remaining_requests,
-                confidence=0.0,
-                context_used=False,
-                model_used=Config.OPENAI_MODEL,
-                chunks_used=0,
-                processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
-                timestamp=datetime.now().isoformat(),
-                search_method=f"blocked_{category}"
-            )
+        
+        # if not is_safe:
+        #     logger.warning(f"Unsafe query blocked - Category: {category}")
+        #     return QueryResponse(
+        #         answer=helpful_response,
+        #         sources=[],
+        #         follow_up_questions=[
+        #             "How does Polkadot's governance system work?",
+        #             "What are the benefits of staking DOT tokens?",
+        #             "How do parachains communicate with each other?"
+        #         ],
+        #         remaining_requests=remaining_requests,
+        #         confidence=0.0,
+        #         context_used=False,
+        #         model_used=Config.OPENAI_MODEL,
+        #         chunks_used=0,
+        #         processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
+        #         timestamp=datetime.now().isoformat(),
+        #         search_method=f"blocked_{category}"
+        #     )
         
         logger.info(f"Processing query from user {request.user_id}: '{request.question[:50]}...' (remaining: {remaining_requests})")
         
@@ -252,7 +254,11 @@ async def query_chatbot(request: QueryRequest):
             query=request.question,
             n_results=request.max_chunks
         )
-       
+        print("\033[92mAll the static chunks are\033[0m", static_chunks)
+
+        # Apply reranking to prioritize chunks with images
+        static_chunks = rerank_static_chunks(static_chunks)
+        
         dynamic_chunks = dynamic_embedding_manager.search_similar_chunks(
             query=request.question,
             n_results=request.max_chunks
