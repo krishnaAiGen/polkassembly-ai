@@ -15,145 +15,28 @@ An AI-powered chatbot system that provides intelligent answers about the Polkado
 - 🔄 **Easy Management**: Startup/stop scripts for complete system management
 - 📝 **Comprehensive Logging**: Separate log files for each service component
 
-## Project Structure
 
-```
-polkassembly-ai/
-├── README.md                  # Project documentation
-├── env.example                # Environment variables template
-├── requirements.txt           # Python dependencies
-├── start_pa_ai.sh            # Startup script (Redis + API with Gunicorn)
-├── stop_pa_ai.sh             # Stop script for all services
-├── create_embeddings.py       # Entry point to generate embeddings (run once)
-├── run_server.py              # Entry point for API server
-├── run_tests.py               # Entry point for testing
-├── data/                      # Data sources
-│   └── data_sources/
-│       ├── polkadot_network/  # Forum data (JSON/TXT files)
-│       └── polkadot_wiki/     # Wiki data (TXT files)
-└── src/                       # Source code directory
-    ├── rag/                   # RAG application modules
-    │   ├── config.py          # Configuration management
-    │   ├── create_embeddings.py # Embedding generation logic
-    │   └── api_server.py      # FastAPI server
-    ├── utils/                 # Utility modules
-    │   ├── data_loader.py     # Document loading and processing
-    │   ├── text_chunker.py    # Text chunking for embeddings
-    │   ├── embeddings.py      # OpenAI embeddings and ChromaDB
-    │   └── qa_generator.py    # Q&A generation with OpenAI
-    └── test/                  # Testing modules
-        └── test_api.py        # API testing script
-```
+## Quick Start
 
-## Setup Instructions
-
-### 1. Clone and Install
+For detailed installation instructions, see [setup.md](setup.md).
 
 ```bash
-# Install dependencies
-pip install fastapi uvicorn openai chromadb python-dotenv tiktoken mem0ai redis python-redis-rate-limit
-```
+# 1. Install dependencies
+pip install -r requirements.txt
 
-### 2. Environment Configuration
-
-```bash
-# Copy the example environment file
+# 2. Configure environment
 cp env.example .env
+# Edit .env with your API keys and data paths
 
-# Edit .env with your OpenAI API key
-# OPENAI_API_KEY=your_actual_openai_api_key_here
-```
+# 3. Create embeddings (see setup.md for details)
+python src/utils/create_static_embeddings.py
+python src/utils/create_dynamic_embeddings.py
 
-### 3. Create Embeddings (One-time Setup)
-
-This step processes all documents and creates embeddings:
-
-```bash
-# Generate embeddings and store in ChromaDB
-python create_embeddings.py
-
-# Optional: Clear existing embeddings and recreate
-python create_embeddings.py --clear
-
-# Optional: Customize batch size and token limits
-python create_embeddings.py --batch-size 25 --min-tokens 100 --max-tokens 800
-```
-
-### 4. Start the API Server
-
-#### Option A: Using the Startup Script (Recommended)
-```bash
-# Make scripts executable (first time only)
-chmod +x start_pa_ai.sh stop_pa_ai.sh
-
-# Start the complete system (Redis + API with Gunicorn)
-./start_pa_ai.sh
-
-# Stop the system
-./stop_pa_ai.sh
-
-# Check system status
-./stop_pa_ai.sh status
-```
-
-#### Option B: Manual Startup
-```bash
-# Start the FastAPI server
+# 4. Start the API server
 python run_server.py
-
-# Or using uvicorn directly
-uvicorn src.rag.api_server:app --host 0.0.0.0 --port 8000
-
-# Or using gunicorn with multiple workers
-gunicorn --bind 0.0.0.0:8000 --workers 3 --worker-class uvicorn.workers.UvicornWorker src.rag.api_server:app
 ```
 
-### 5. (Optional) Configure Memory
 
-To enable conversation memory with Mem0:
-
-```bash
-# Install mem0 package
-pip install mem0ai
-
-# Add your Mem0 API key to .env file
-echo "MEM0_API_KEY=your_mem0_api_key_here" >> .env
-```
-
-### 6. (Optional) Configure Rate Limiting
-
-To enable Redis-based rate limiting:
-
-```bash
-# Install and start Redis server
-# On macOS:
-brew install redis
-brew services start redis
-
-# On Ubuntu/Debian:
-sudo apt-get install redis-server
-sudo systemctl start redis-server
-
-# On CentOS/RHEL:
-sudo yum install redis
-sudo systemctl start redis
-
-# Test Redis connection
-redis-cli ping  # Should return "PONG"
-```
-
-### 7. Test the System
-
-```bash
-# Run all tests
-python src/test/run_tests.py
-
-# Run specific tests
-python src/test/run_tests.py --api         # API functionality only
-python src/test/run_tests.py --memory      # Memory integration only
-python src/test/run_tests.py --formatting  # Clean formatting validation
-python src/test/run_tests.py --rate-limit  # Rate limiting functionality
-```
 
 ## API Endpoints
 
@@ -353,41 +236,17 @@ The startup script creates organized log files:
 - Automatic process detection and cleanup
 - Graceful shutdown with timeout handling
 
-## Configuration Options
+## Key Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_API_KEY` | - | Your OpenAI API key (required) |
-| `OPENAI_MODEL` | gpt-3.5-turbo | OpenAI model for answers |
-| `OPENAI_EMBEDDING_MODEL` | text-embedding-ada-002 | Embedding model |
-| `MEM0_API_KEY` | - | Mem0 API key for conversation memory (optional) |
-| `REDIS_HOST` | localhost | Redis server host for rate limiting |
-| `REDIS_PORT` | 6379 | Redis server port |
-| `REDIS_PASSWORD` | - | Redis password (if required) |
-| `RATE_LIMIT_MAX_REQUESTS` | 20 | Maximum requests per time window |
-| `RATE_LIMIT_EXPIRE_SECONDS` | 3600 | Rate limit time window (1 hour) |
-| `WEB_SEARCH` | true | Enable web search fallback |
-| `WEB_SEARCH_CONTEXT_SIZE` | high | Web search context size (low/medium/high) |
-| `CHROMA_PERSIST_DIRECTORY` | ./chroma_db | ChromaDB storage path |
-| `CHROMA_COLLECTION_NAME` | polkadot_embeddings | Collection name |
-| `API_HOST` | 0.0.0.0 | API server host |
-| `API_PORT` | 8000 | API server port |
-| `CHUNK_SIZE` | 1000 | Text chunk size for embeddings |
-| `CHUNK_OVERLAP` | 200 | Overlap between chunks |
+Main configuration options (see [setup.md](setup.md) for complete list):
 
-## Data Sources
-
-The system processes two types of data:
-
-1. **Polkadot Wiki** (`data/data_sources/polkadot_wiki/`)
-   - Technical documentation
-   - Guides and tutorials
-   - Architecture information
-
-2. **Polkadot Forum** (`data/data_sources/polkadot_network/`)
-   - Community discussions
-   - Governance proposals
-   - Ambassador program information
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_API_KEY` | Your OpenAI API key (required) |
+| `STATIC_DATA_PATH` | Path to static documentation files |
+| `DYNAMIC_DATA_PATH` | Path to onchain data files |
+| `TAVILY_API_KEY` | API key for web search (optional) |
+| `MEM0_API_KEY` | API key for conversation memory (optional) |
 
 ## API Documentation
 
@@ -395,75 +254,15 @@ Once the server is running, visit:
 - **Interactive API Docs**: http://localhost:8000/docs
 - **ReDoc Documentation**: http://localhost:8000/redoc
 
-## Monitoring and Logs
-
-- Embedding creation logs: `embedding_creation.log`
-- API server logs: Console output
-- ChromaDB storage: `./chroma_db/` directory
-
-## Troubleshooting
-
-### Common Issues
-
-1. **"OPENAI_API_KEY must be set"**
-   - Ensure your `.env` file contains a valid OpenAI API key
-
-2. **"No data available. Please create embeddings first."**
-   - Run `python create_embeddings.py` to initialize the database
-
-3. **"Collection already exists with data"**
-   - Use `--clear` flag to recreate embeddings: `python create_embeddings.py --clear`
-
-4. **Rate limiting from OpenAI**
-   - The system includes automatic retry logic
-   - Consider reducing batch size: `--batch-size 10`
-
-5. **"Rate limiting disabled due to Redis connection failure"**
-   - Ensure Redis is running: `redis-server`
-   - Check Redis connection: `redis-cli ping`
-   - Verify Redis configuration in `.env` file
-
-6. **"HTTP 429 Too Many Requests"**
-   - User has exceeded rate limits (default: 20 requests/hour)
-   - Check remaining requests: `GET /rate-limit/{user_id}`
-   - Wait for rate limit reset or increase limits in config
-
-### Performance Tips
-
-- **Faster embedding creation**: Increase `--batch-size` (but watch rate limits)
-- **Memory optimization**: Reduce `CHUNK_SIZE` in configuration
-- **Better accuracy**: Increase `max_chunks` in queries (but slower)
-
-## Development
-
-### Project Structure
-
-The project uses a clean, modular structure:
-- **Root level**: Contains entry point scripts and documentation
-- **`src/rag/`**: Contains RAG application logic (config, embeddings, API)
-- **`src/utils/`**: Contains utility modules for data processing
-- **`src/test/`**: Contains testing modules
-
-### Adding New Data Sources
-
-1. Place new documents in `data/data_sources/polkadot_network/` or `data/data_sources/polkadot_wiki/`
-2. Run `python create_embeddings.py` to process new documents
-3. The system will automatically detect and process new files
-
-### Customizing the AI
-
-- Modify prompts in `src/utils/qa_generator.py`
-- Adjust embedding parameters in `src/utils/embeddings.py`
-- Change chunking strategy in `src/utils/text_chunker.py`
-- Update configuration in `src/rag/config.py`
-
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch  
 3. Make your changes
-4. Test with `python run_tests.py`
+4. Test thoroughly
 5. Submit a pull request
+
+For detailed setup, troubleshooting, and development information, see [setup.md](setup.md).
 
 ## License
 

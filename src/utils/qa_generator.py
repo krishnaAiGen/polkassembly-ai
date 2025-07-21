@@ -8,7 +8,7 @@ import os
 import numpy as np
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
-from .content_guardrails import get_guardrails
+from ..guardrail.content_guardrails import get_guardrails
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -135,7 +135,11 @@ class QAGenerator:
                     )
                     
                     answer = response.choices[0].message.content
-                    answer = self.remove_double_asterisks(answer)
+                    
+                    # Clean any example.com URLs from the response
+                    answer = self.clean_example_urls(answer)
+                    
+                    # answer = self.remove_double_asterisks(answer)
                     sources = []  # Initialize empty sources for fallback
             else:
                 #no web search
@@ -323,6 +327,38 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
     
     def remove_double_asterisks(self, text):
         return text.replace("**", "").replace("-", "")
+    
+    def clean_example_urls(self, text):
+        """
+        Remove any lines containing links that don't contain the polkassembly S3 bucket URL.
+        Only allows links from https://polkassembly-ai.s3.us-east-1.amazonaws.com
+        """
+        import re
+        
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        # Pattern to match image markdown: ![alt text](url)
+        image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+        
+        for line in lines:
+            should_include_line = True
+            
+            # Check if line contains image markdown
+            image_matches = re.findall(image_pattern, line)
+            
+            if image_matches:
+                for alt_text, url in image_matches:
+                    # Only keep links that contain our S3 bucket URL
+                    if 'https://polkassembly-ai.s3.us-east-1.amazonaws.com' not in url:
+                        should_include_line = False
+                        logger.info(f"Removed image line with invalid URL: {line.strip()}")
+                        break
+            
+            if should_include_line:
+                cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines)
 
     async def generate_answer(self, 
                        query: str, 
@@ -352,20 +388,20 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
         """
         try:
             # AI-powered content moderation
-            is_safe, category, helpful_response = self.guardrails.moderate_content(query)
+            # is_safe, category, helpful_response = self.guardrails.moderate_content(query)
             
-            if not is_safe:
-                logger.warning(f"Unsafe query detected - Category: {category}")
-                return {
-                    'answer': helpful_response,
-                    'sources': [],
-                    'confidence': 0.0,
-                    'follow_up_questions': self._get_helpful_follow_ups(),
-                    'context_used': False,
-                    'model_used': self.model,
-                    'chunks_used': 0,
-                    'search_method': f'blocked_{category}'
-                }
+            # if not is_safe:
+            #     logger.warning(f"Unsafe query detected - Category: {category}")
+            #     return {
+            #         'answer': helpful_response,
+            #         'sources': [],
+            #         'confidence': 0.0,
+            #         'follow_up_questions': self._get_helpful_follow_ups(),
+            #         'context_used': False,
+            #         'model_used': self.model,
+            #         'chunks_used': 0,
+            #         'search_method': f'blocked_{category}'
+            #     }
             
             # Check if this is a greeting message
             if self._is_greeting_message(query):
@@ -385,6 +421,8 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             
             # Create context from chunks
             context = self.create_context_from_chunks(chunks)
+            print("context from chunks", context)
+            print("context after strip", context.strip())
             
             # Check if we have sufficient context
             has_sufficient_context = (
@@ -429,6 +467,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             system_prompt = custom_prompt or self._get_default_system_prompt()
             
             # Create user prompt with context, memory, and query
+            print("context before going to openAI prompt", context)
             user_prompt = self._create_user_prompt(query, context, memory_context)
             
             # Generate response using OpenAI
@@ -445,7 +484,12 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             # answer = response.choices[0].message.content.strip()
             answer = response.choices[0].message.content
             print("--------answer without strip-------\n", answer)
-            answer = self.remove_double_asterisks(answer)
+            
+            # Clean any example.com URLs from the response
+            answer = self.clean_example_urls(answer)
+            print("--------answer after cleaning example.com URLs-------\n", answer)
+            
+            # answer = self.remove_double_asterisks(answer)
 
             # Apply content guardrails but preserve markdown formatting
             # answer = self.guardrails.sanitize_response(answer)
@@ -499,53 +543,59 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
     
     def _get_default_system_prompt(self) -> str:
         """Get the default system prompt for the QA system"""
+
         return """You are a helpful AI assistant specialized in answering questions about Polkadot, the blockchain platform. 
 
-You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
+            You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
 
-    ✅ PROFESSIONAL FORMATTING REQUIREMENTS:
-    - Use plain text without any markdown symbols (**, *, ##, -, etc.)
-    - ALWAYS add line breaks between numbered steps
-    - ALWAYS add line breaks between bullet points
-    - Use numbered lists (1. 2. 3.) for step-by-step instructions with line breaks
-    - Use simple bullet points without dashes or symbols
-    - Write in clean, professional sentences
-    - Use quotation marks for emphasis instead of bold/italic
-    - Don't use -, ** in your answers while writing steps
+                ✅ PROFESSIONAL FORMATTING REQUIREMENTS:
+                - ALWAYS add line breaks between numbered steps
+                - ALWAYS add line breaks between bullet points
+                - Use numbered lists (1. 2. 3.) for step-by-step instructions with line breaks
+                - Use simple bullet points without dashes or symbols
+                - Write in clean, professional sentences
+                - Use quotation marks for emphasis instead of bold/italic
+                - PRESERVE image markdown exactly as provided: ![Step Image](https://...) - keep this format unchanged
+                - Include ALL images from the context in your response at the appropriate steps
 
-## STEP-BY-STEP FORMATTING (MANDATORY):
+            ## STEP-BY-STEP FORMATTING (MANDATORY):
 
-When providing numbered instructions, ALWAYS format like this:
+            When providing numbered instructions, ALWAYS format like this:
 
-To stake **DOT tokens** and earn rewards:
+            To stake DOT tokens and earn rewards:
 
-1. Create and fund your wallet** with DOT tokens
+            1. Create and fund your wallet with DOT tokens
+               ![Step Image](https://example.com/image1.jpg)
 
-2. Access a staking interface** (Polkadot.js, Polkassembly, etc.)
+            2. Access a staking interface (Polkadot.js, Polkassembly, etc.)
+               ![Step Image](https://example.com/image2.jpg)
 
-3. Select reliable validators** based on commission and performance
+            3. Select reliable validators based on commission and performance
 
-4. Nominate your chosen validators** with your desired amount
+            4. Nominate your chosen validators with your desired amount
 
-5. Monitor your staking rewards** and validator performance
+            5. Monitor your staking rewards and validator performance
 
-## BULLET POINT FORMATTING:
+            CRITICAL: Always include any images that appear in the context - they are essential visual guides!
 
-When listing features or benefits:
+            ## BULLET POINT FORMATTING:
 
-Key benefits include:
+            When listing features or benefits:
 
-- Passive income** through staking rewards (typically 10-15% APY)
-- Network security** participation and decentralization support  
-- Governance rights** to vote on network proposals
+            Key benefits include:
 
-## WHAT TO AVOID:
+            - Passive income** through staking rewards (typically 10-15% APY)
+            - Network security** participation and decentralization support  
+            - Governance rights** to vote on network proposals
 
-NEVER format like this (bad example):
-"### How to stake DOT: 1. Create wallet 2. Select validators 3. Nominate tokens"
+            ## WHAT TO AVOID:
 
-**Remember**: Answer as if you have direct expertise about Polkadot. Start directly with content, use proper line breaks between steps, and provide helpful, accurate, and **professionally formatted** information."""
-    
+            NEVER format like this (bad example):
+            "### How to stake DOT: 1. Create wallet 2. Select validators 3. Nominate tokens"
+            "Never use https://example.com/image1.jpg or https://example.com/image2.jpg, in your output, if there is such, then remove it in the output"
+            
+            **Remember**: Answer as if you have direct expertise about Polkadot. Start directly with content, use proper line breaks between steps, and provide helpful, accurate, and **professionally formatted** information."""
+                
     def _create_user_prompt(self, query: str, context: str, memory_context: str = "") -> str:
         """Create the user prompt with query, context, and memory"""
         prompt_parts = []
@@ -560,7 +610,7 @@ NEVER format like this (bad example):
         
         prompt_parts.append(f"Question: {query}")
         
-        prompt_parts.append("Answer the question directly without mentioning the context, sources, documentation, or previous conversations. Do not start with phrases like \"Based on the provided context\", \"According to the documentation\", \"From the Polkadot Wiki\", \"From our previous conversation\", etc. Simply provide the answer as if you have direct knowledge of the topic.\n\nCRITICAL FORMATTING REQUIREMENTS:\n- NEVER start with headers (##, ###)\n- Start directly with answer content\n- ALWAYS add line breaks between numbered steps (1. step one [LINE BREAK] 2. step two [LINE BREAK])\n- ALWAYS add line breaks between bullet points\n- Use professional markdown formatting throughout")
+        prompt_parts.append("Answer the question directly without mentioning the context, sources, documentation, or previous conversations. Do not start with phrases like \"Based on the provided context\", \"According to the documentation\", \"From the Polkadot Wiki\", \"From our previous conversation\", etc. Simply provide the answer as if you have direct knowledge of the topic.\n\nCRITICAL FORMATTING REQUIREMENTS:\n- NEVER start with headers (##, ###)\n- Start directly with answer content\n- ALWAYS add line breaks between numbered steps (1. step one [LINE BREAK] 2. step two [LINE BREAK])\n- ALWAYS add line breaks between bullet points\n- Use professional markdown formatting throughout\n- IMPORTANT: Include all images from the context using exact markdown format: ![Step Image](url)")
         
         return "\n\n".join(prompt_parts)
     
@@ -643,6 +693,10 @@ Summary:"""
             )
             
             summary = response.choices[0].message.content.strip()
+            
+            # Clean any example.com URLs from the summary
+            summary = self.clean_example_urls(summary)
+            
             return summary
             
         except Exception as e:
@@ -712,6 +766,10 @@ Format: Return only the 3 questions, one per line, without numbers or bullets.""
             )
             
             follow_up_text = response.choices[0].message.content.strip()
+            
+            # Clean any example.com URLs from the follow-up questions
+            follow_up_text = self.clean_example_urls(follow_up_text)
+            
             follow_up_questions = [q.strip() for q in follow_up_text.split('\n') if q.strip()]
             
             # Ensure we have 2-3 questions, fallback if needed
