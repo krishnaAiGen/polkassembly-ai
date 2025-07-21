@@ -2,12 +2,18 @@ import openai
 import logging
 from typing import List, Dict, Any, Optional
 import re
+from .web_search import search_tavily
+from dotenv import load_dotenv
+import os
+import numpy as np
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
 from .content_guardrails import get_guardrails
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 class QAGenerator:
     """Generate answers using OpenAI based on retrieved document chunks"""
@@ -80,7 +86,7 @@ class QAGenerator:
         
         return ''.join(context_parts)
     
-    def generate_answer_with_web_search(self, query: str, user_id: str = "default_user") -> Dict[str, Any]:
+    async def generate_answer_with_web_search(self, query: str, user_id: str = "default_user") -> Dict[str, Any]:
         """
         Generate answer using OpenAI with web search-like knowledge
         
@@ -101,30 +107,7 @@ class QAGenerator:
                 self.memory_manager.add_user_query(query, user_id)
             
             # Create a comprehensive system prompt for web search-like responses
-            system_prompt = """You are a helpful AI assistant specialized in answering questions about Polkadot, the blockchain platform. 
-
-You have access to up-to-date knowledge about Polkadot and the broader blockchain ecosystem. When answering questions, draw from your knowledge of:
-- Polkadot architecture and technology
-- Parachains and the relay chain
-- Governance and treasury systems
-- Staking and validators
-- Cross-chain interoperability
-- Recent developments and upgrades
-- Community and ecosystem projects
-
-
-CRITICAL FORMATTING RULES:
-✅ PROFESSIONAL FORMATTING REQUIREMENTS:
-- Use plain text without any markdown symbols (**, *, ##, -, etc.)
-- ALWAYS add line breaks between numbered steps
-- ALWAYS add line breaks between bullet points
-- Use numbered lists (1. 2. 3.) for step-by-step instructions with line breaks
-- Use simple bullet points without dashes or symbols
-- Write in clean, professional sentences
-- Use quotation marks for emphasis instead of bold/italic
-
-
-ALWAYS format with proper line breaks and no leading headers."""
+            system_prompt = self._get_default_system_prompt()
             
             # Create user prompt with memory context
             user_prompt_parts = []
@@ -133,20 +116,31 @@ ALWAYS format with proper line breaks and no leading headers."""
             
             user_prompt_parts.append(f"Question about Polkadot: {query}")
             user_prompt = "\n\n".join(user_prompt_parts)
-            
-            # Generate response using OpenAI with enhanced model
-            response = self.client.chat.completions.create(
-                model="gpt-4o" if "gpt-4" in self.model or self.model == "gpt-3.5-turbo" else self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,  # Lower temperature for more factual responses
-                max_tokens=self.max_tokens
-            )
-            
-            answer = response.choices[0].message.content
-            answer = self.remove_double_asterisks(answer)
+
+            if os.getenv("WEB_SEARCH"):
+                try:
+                    #do the web search first
+                    answer, sources = await search_tavily(query)
+                except:
+                    #fall back to openAI
+                    logger.info("Web search failed, falling back to OpenAI")
+                    response = self.client.chat.completions.create(
+                        model="gpt-4o" if "gpt-4" in self.model or self.model == "gpt-3.5-turbo" else self.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.1,  # Lower temperature for more factual responses
+                        max_tokens=self.max_tokens
+                    )
+                    
+                    answer = response.choices[0].message.content
+                    answer = self.remove_double_asterisks(answer)
+                    sources = []  # Initialize empty sources for fallback
+            else:
+                #no web search
+                answer = "I couldn't find relevant information in the Polkadot knowledge base to answer your question based on web-search. Please try rephrasing your query or ask about a different topic related to Polkadot."
+                sources = []
             
             # Apply content guardrails but preserve markdown formatting
             # answer = self.guardrails.sanitize_response(answer)
@@ -156,26 +150,29 @@ ALWAYS format with proper line breaks and no leading headers."""
                 self.memory_manager.add_assistant_response(answer, user_id)
             
             # Create web search-style sources
-            sources = [
-                {
-                    'title': 'Polkadot Knowledge Base',
-                    'url': 'https://polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                },
-                {
-                    'title': 'Polkadot Wiki',
-                    'url': 'https://wiki.polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                },
-                {
-                    'title': 'Polkadot Documentation',
-                    'url': 'https://docs.polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                }
-            ]
+            if len(sources) > 0:
+                sources = sources[:np.random.randint(1, 4)]
+            else:
+                sources = [
+                    {
+                        'title': 'Polkadot Knowledge Base',
+                        'url': 'https://polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    },
+                    {
+                        'title': 'Polkadot Wiki',
+                        'url': 'https://wiki.polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    },
+                    {
+                        'title': 'Polkadot Documentation',
+                        'url': 'https://docs.polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    }
+                ]
             
             # Generate follow-up questions for web search results
             follow_up_questions = self._get_fallback_follow_ups(query)
@@ -327,7 +324,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
     def remove_double_asterisks(self, text):
         return text.replace("**", "").replace("-", "")
 
-    def generate_answer(self, 
+    async def generate_answer(self, 
                        query: str, 
                        chunks: List[Dict[str, Any]], 
                        custom_prompt: Optional[str] = None,
@@ -399,7 +396,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             # If no sufficient context and web search is enabled, use web search
             if not has_sufficient_context and self.enable_web_search:
                 logger.info("Insufficient local context, falling back to web search")
-                return self.generate_answer_with_web_search(query)
+                return await self.generate_answer_with_web_search(query)
             
             # If no context at all, return appropriate message
             if not context.strip():
@@ -487,7 +484,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             # If local generation fails and web search is enabled, try web search as fallback
             if self.enable_web_search:
                 logger.info("Local generation failed, trying web search fallback")
-                return self.generate_answer_with_web_search(query, user_id)
+                return await self.generate_answer_with_web_search(query, user_id)
             
             return {
                 'answer': "I encountered an error while generating the answer. Please try again.",
@@ -506,32 +503,15 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
 
 You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
 
-1. **Answer DIRECTLY** - Do not mention sources, context, or documentation in your response
-2. Provide **COMPREHENSIVE**, well-structured responses using proper markdown formatting
-3. Never start with phrases like: "Based on the provided context", "According to the documentation", "From the Polkadot Wiki", etc.
-4. Base your answers on the provided context but present them as direct knowledge
-5. If the context doesn't contain enough information, simply state what you don't know without referencing the context
-6. Be accurate and specific with relevant details
-7. Explain technical concepts clearly and understandably
-8. If you're uncertain about something, express that uncertainty directly
-9. **Use proper markdown formatting** throughout your response
-10. Focus on key points and essential information while being thorough
-
-## CRITICAL FORMATTING RULES:
-
-**PROFESSIONAL FORMATTING REQUIREMENTS:**
-- **NEVER** start responses with headers (##, ###, ####)
-- Start directly with the answer content
-- **ALWAYS** add line breaks between numbered steps
-- **ALWAYS** add line breaks between bullet points
-- Use **bold text** for emphasis and key terms
-- Use *italic text* for technical terms or concepts  
-- Use `code formatting` for technical commands, addresses, or code snippets
-- Use headers (## or ###) only WITHIN responses when absolutely necessary for very long content
-- Use numbered lists (1. 2. 3.) for step-by-step instructions with proper spacing
-- Use bullet points (- or *) for feature lists with proper spacing
-- Use [Link text](url) format for links
-- Use > Blockquotes for important notes or warnings
+    ✅ PROFESSIONAL FORMATTING REQUIREMENTS:
+    - Use plain text without any markdown symbols (**, *, ##, -, etc.)
+    - ALWAYS add line breaks between numbered steps
+    - ALWAYS add line breaks between bullet points
+    - Use numbered lists (1. 2. 3.) for step-by-step instructions with line breaks
+    - Use simple bullet points without dashes or symbols
+    - Write in clean, professional sentences
+    - Use quotation marks for emphasis instead of bold/italic
+    - Don't use -, ** in your answers while writing steps
 
 ## STEP-BY-STEP FORMATTING (MANDATORY):
 
@@ -539,15 +519,15 @@ When providing numbered instructions, ALWAYS format like this:
 
 To stake **DOT tokens** and earn rewards:
 
-1. **Create and fund your wallet** with DOT tokens
+1. Create and fund your wallet** with DOT tokens
 
-2. **Access a staking interface** (Polkadot.js, Polkassembly, etc.)
+2. Access a staking interface** (Polkadot.js, Polkassembly, etc.)
 
-3. **Select reliable validators** based on commission and performance
+3. Select reliable validators** based on commission and performance
 
-4. **Nominate your chosen validators** with your desired amount
+4. Nominate your chosen validators** with your desired amount
 
-5. **Monitor your staking rewards** and validator performance
+5. Monitor your staking rewards** and validator performance
 
 ## BULLET POINT FORMATTING:
 
@@ -555,9 +535,9 @@ When listing features or benefits:
 
 Key benefits include:
 
-- **Passive income** through staking rewards (typically 10-15% APY)
-- **Network security** participation and decentralization support  
-- **Governance rights** to vote on network proposals
+- Passive income** through staking rewards (typically 10-15% APY)
+- Network security** participation and decentralization support  
+- Governance rights** to vote on network proposals
 
 ## WHAT TO AVOID:
 

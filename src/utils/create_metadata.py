@@ -1,3 +1,10 @@
+"""
+
+this file is for generating questions from on chain data and static data.
+"""
+
+
+
 import openai
 import json
 import random

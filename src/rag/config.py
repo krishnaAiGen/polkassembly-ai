@@ -50,10 +50,11 @@ class Config:
     SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", 0.7))
     
     # Data paths
-    DATA_SOURCES_PATH = "data/dynamic_kusama_polka"
+    STATIC_DATA_PATH = os.getenv("STATIC_DATA_PATH", "data/joined_data/static")  # Path for static documentation
+    DYNAMIC_DATA_PATH = os.getenv("DYNAMIC_DATA_PATH", "data/dynamic_kusama_polka")  # Path for dynamic Polkadot/Kusama data
+    DATA_SOURCES_PATH = DYNAMIC_DATA_PATH  # Backward compatibility
     POLKADOT_NETWORK_PATH = os.path.join(DATA_SOURCES_PATH, "polkadot_network")
     POLKADOT_WIKI_PATH = os.path.join(DATA_SOURCES_PATH, "polkadot_wiki")
-    DYNAMIC_DATA_PATH = "data/dynamic_kusama_polka"  # Path for dynamic Polkadot/Kusama data
     
     # Content Guardrails Configuration
     ENABLE_CONTENT_FILTERING = os.getenv("ENABLE_CONTENT_FILTERING", "true").lower() == "true"
