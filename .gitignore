@@ -18,6 +18,7 @@ chroma_db/
 data/
 *.json
 *.txt
+!requirements.txt
 *.csv
 *.xlsx
 *.parquet
