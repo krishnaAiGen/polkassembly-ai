@@ -250,6 +250,22 @@ chmod +x start_pa_ai.sh stop_pa_ai.sh
 
 # Check system status
 ./stop_pa_ai.sh status
+
+# Force stop everything
+./stop_pa_ai.sh force
+
+#kills with PID
+./stop_pa_ai.sh cleanup
+
+# Stop and cleanup (with logs)
+./stop_pa_ai.sh cleanup --with-logs
+
+Log Files Created:
+./logs/redis.log - Redis server logs
+./logs/api_server.log - Main API application logs
+./logs/api_server_error.log - API error logs
+./logs/gunicorn_access.log - HTTP access logs
+
 ```
 
 **Startup Script Features:**
