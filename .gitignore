@@ -16,6 +16,7 @@ chroma_db/
 
 # Data files and directories
 data/
+!src/data/
 *.json
 *.txt
 !requirements.txt
