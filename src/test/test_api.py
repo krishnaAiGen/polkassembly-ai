@@ -29,6 +29,7 @@ def test_query_endpoint():
     print("\nTesting query endpoint...")
     
     test_questions = [
+        "Hello",  # Test greeting response with follow-ups
         "What is Polkadot?",
         "How does staking work in Polkadot?",
         "What are parachains?",
@@ -53,6 +54,16 @@ def test_query_endpoint():
             print(f"   Processing time: {data['processing_time_ms']:.2f}ms")
             print(f"   Answer: {data['answer'][:100]}...")
             print(f"   Sources: {len(data['sources'])}")
+            print(f"   Follow-up questions: {len(data.get('follow_up_questions', []))}")
+            
+            # Print follow-up questions if available
+            follow_ups = data.get('follow_up_questions', [])
+            if follow_ups:
+                print("   Follow-up suggestions:")
+                for i, q in enumerate(follow_ups[:3], 1):
+                    print(f"     {i}. {q}")
+            else:
+                print("   ⚠️  No follow-up questions returned")
             
             time.sleep(1)  # Be nice to the API
             

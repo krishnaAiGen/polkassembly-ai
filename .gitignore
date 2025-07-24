@@ -11,10 +11,15 @@ chroma_db/
 *.sqlite3
 *.db
 
+#zip files
+*.zip
+
 # Data files and directories
 data/
+!src/data/
 *.json
 *.txt
+!requirements.txt
 *.csv
 *.xlsx
 *.parquet
@@ -139,3 +144,9 @@ yarn-error.log*
 ehthumbs.db
 Thumbs.db 
 pk_ai_env
+
+#redis file
+*.rdb
+
+#md files
+*.md

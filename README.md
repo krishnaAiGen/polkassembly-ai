@@ -11,85 +11,32 @@ An AI-powered chatbot system that provides intelligent answers about the Polkado
 - 💾 **Persistent Storage**: ChromaDB for efficient vector storage
 - 🔧 **Configurable**: Environment-based configuration
 - 📊 **Analytics**: Built-in statistics and monitoring
+- 🚀 **Production Ready**: Gunicorn with multiple workers for scalability
+- 🔄 **Easy Management**: Startup/stop scripts for complete system management
+- 📝 **Comprehensive Logging**: Separate log files for each service component
 
-## Project Structure
 
-```
-polkassembly-ai/
-├── README.md                  # Project documentation
-├── env.example                # Environment variables template
-├── requirements.txt           # Python dependencies
-├── create_embeddings.py       # Entry point to generate embeddings (run once)
-├── run_server.py              # Entry point for API server
-├── run_tests.py               # Entry point for testing
-├── data/                      # Data sources
-│   └── data_sources/
-│       ├── polkadot_network/  # Forum data (JSON/TXT files)
-│       └── polkadot_wiki/     # Wiki data (TXT files)
-└── src/                       # Source code directory
-    ├── rag/                   # RAG application modules
-    │   ├── config.py          # Configuration management
-    │   ├── create_embeddings.py # Embedding generation logic
-    │   └── api_server.py      # FastAPI server
-    ├── utils/                 # Utility modules
-    │   ├── data_loader.py     # Document loading and processing
-    │   ├── text_chunker.py    # Text chunking for embeddings
-    │   ├── embeddings.py      # OpenAI embeddings and ChromaDB
-    │   └── qa_generator.py    # Q&A generation with OpenAI
-    └── test/                  # Testing modules
-        └── test_api.py        # API testing script
-```
+## Quick Start
 
-## Setup Instructions
-
-### 1. Clone and Install
+For detailed installation instructions, see [setup.md](setup.md).
 
 ```bash
-# Install dependencies
+# 1. Install dependencies
 pip install -r requirements.txt
-```
 
-### 2. Environment Configuration
-
-```bash
-# Copy the example environment file
+# 2. Configure environment
 cp env.example .env
+# Edit .env with your API keys and data paths
 
-# Edit .env with your OpenAI API key
-# OPENAI_API_KEY=your_actual_openai_api_key_here
-```
+# 3. Create embeddings (see setup.md for details)
+python src/utils/create_static_embeddings.py
+python src/utils/create_dynamic_embeddings.py
 
-### 3. Create Embeddings (One-time Setup)
-
-This step processes all documents and creates embeddings:
-
-```bash
-# Generate embeddings and store in ChromaDB
-python create_embeddings.py
-
-# Optional: Clear existing embeddings and recreate
-python create_embeddings.py --clear
-
-# Optional: Customize batch size and token limits
-python create_embeddings.py --batch-size 25 --min-tokens 100 --max-tokens 800
-```
-
-### 4. Start the API Server
-
-```bash
-# Start the FastAPI server
+# 4. Start the API server
 python run_server.py
-
-# Or using uvicorn directly
-uvicorn src.rag.api_server:app --host 0.0.0.0 --port 8000
 ```
 
-### 5. Test the System
 
-```bash
-# Run the test script
-python run_tests.py
-```
 
 ## API Endpoints
 
@@ -105,9 +52,21 @@ Content-Type: application/json
 
 {
   "question": "What is Polkadot?",
+  "user_id": "krishna",
+  "client_ip": "192.168.1.1",
   "max_chunks": 5,
   "include_sources": true,
   "custom_prompt": "optional custom system prompt"
+}
+```
+
+**Response:**
+```json
+{
+  "answer": "Polkadot is a blockchain protocol...",
+  "sources": [...],
+  "follow_up_questions": ["...", "...", "..."],
+  "remaining_requests": 7
 }
 ```
 
@@ -128,6 +87,58 @@ Content-Type: application/json
 GET /stats
 ```
 
+### 🔐 Rate Limiting
+
+The API implements Redis-based rate limiting to prevent abuse:
+
+- **Default Limits**: 20 requests per hour per user_id
+- **Rate Limit Response**: HTTP 429 when limit exceeded
+- **Per-User Tracking**: Each user_id has separate rate limits
+- **Automatic Reset**: Limits reset after time window expires
+
+**Check Rate Limit Status:**
+```http
+GET /rate-limit/{user_id}
+```
+
+**Response:**
+```json
+{
+  "user_id": "krishna",
+  "rate_limit_stats": {
+    "max_requests": 20,
+    "used_requests": 13,
+    "remaining_requests": 7,
+    "time_window_seconds": 3600
+  }
+}
+```
+
+## 🧠 Memory Integration
+
+The system includes **conversation memory** powered by Mem0, enabling context-aware conversations:
+
+### Features
+- **Context Retention**: Remembers previous questions and answers
+- **Smart Follow-ups**: Uses conversation history for better responses
+- **Automatic Memory**: No manual memory management required
+- **Privacy**: Isolated memory per user session
+
+### Memory Flow
+1. **User Query**: System searches memory for relevant context
+2. **Context Injection**: Memory context is added to prompt
+3. **Response Generation**: AI considers both documents and memory
+4. **Memory Storage**: Query and response are automatically stored
+
+### Example Conversation
+```
+User: "What is staking in Polkadot?"
+Bot: "Staking in Polkadot allows DOT holders to..."
+
+User: "What are the rewards for that?"
+Bot: "Staking rewards in Polkadot include..." # Uses memory context
+```
+
 ## Usage Examples
 
 ### Python Client Example
@@ -138,14 +149,17 @@ import requests
 # Ask a question
 response = requests.post("http://localhost:8000/query", json={
     "question": "How do I stake DOT tokens?",
+    "user_id": "test_user",
+    "client_ip": "192.168.1.1",
     "max_chunks": 3,
     "include_sources": True
 })
 
 data = response.json()
 print(f"Answer: {data['answer']}")
-print(f"Confidence: {data['confidence']}")
+print(f"Remaining requests: {data['remaining_requests']}")
 print(f"Sources: {len(data['sources'])}")
+print(f"Follow-up questions: {data['follow_up_questions']}")
 ```
 
 ### cURL Examples
@@ -159,6 +173,8 @@ curl -X POST "http://localhost:8000/query" \
   -H "Content-Type: application/json" \
   -d '{
     "question": "What are parachains?",
+    "user_id": "curl_user",
+    "client_ip": "192.168.1.1",
     "max_chunks": 3,
     "include_sources": true
   }'
@@ -172,33 +188,65 @@ curl -X POST "http://localhost:8000/search" \
   }'
 ```
 
-## Configuration Options
+## 🚀 Startup Scripts
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_API_KEY` | - | Your OpenAI API key (required) |
-| `OPENAI_MODEL` | gpt-3.5-turbo | OpenAI model for answers |
-| `OPENAI_EMBEDDING_MODEL` | text-embedding-ada-002 | Embedding model |
-| `CHROMA_PERSIST_DIRECTORY` | ./chroma_db | ChromaDB storage path |
-| `CHROMA_COLLECTION_NAME` | polkadot_embeddings | Collection name |
-| `API_HOST` | 0.0.0.0 | API server host |
-| `API_PORT` | 8000 | API server port |
-| `CHUNK_SIZE` | 1000 | Text chunk size for embeddings |
-| `CHUNK_OVERLAP` | 200 | Overlap between chunks |
+The project includes comprehensive startup and stop scripts for easy system management:
 
-## Data Sources
+### `start_pa_ai.sh` - System Startup
+Automatically starts both Redis and the API server with optimal production settings:
 
-The system processes two types of data:
+**Features:**
+- ✅ **Redis Server**: Starts Redis with proper configuration
+- ✅ **Gunicorn Workers**: Runs API with 3 worker processes for scalability
+- ✅ **Process Management**: Tracks PIDs for proper shutdown
+- ✅ **Health Checks**: Verifies services are running correctly
+- ✅ **Comprehensive Logging**: Separate log files for each component
+- ✅ **Error Handling**: Graceful error handling and recovery
 
-1. **Polkadot Wiki** (`data/data_sources/polkadot_wiki/`)
-   - Technical documentation
-   - Guides and tutorials
-   - Architecture information
+**Configuration (via environment variables):**
+```bash
+export API_HOST="0.0.0.0"      # API server host
+export API_PORT="8000"         # API server port
+export WORKERS="3"             # Number of Gunicorn workers
+export REDIS_HOST="localhost"  # Redis host
+export REDIS_PORT="6379"       # Redis port
+```
 
-2. **Polkadot Forum** (`data/data_sources/polkadot_network/`)
-   - Community discussions
-   - Governance proposals
-   - Ambassador program information
+### `stop_pa_ai.sh` - System Shutdown
+Gracefully stops all services with multiple options:
+
+**Usage:**
+```bash
+./stop_pa_ai.sh              # Graceful shutdown
+./stop_pa_ai.sh force        # Force stop all processes
+./stop_pa_ai.sh cleanup      # Stop and clean up PID files
+./stop_pa_ai.sh status       # Show current system status
+./stop_pa_ai.sh help         # Show help information
+```
+
+### Log Files
+The startup script creates organized log files:
+- `logs/redis.log` - Redis server logs
+- `logs/api_server.log` - API server logs
+- `logs/api_server_error.log` - API error logs
+- `logs/access.log` - HTTP access logs
+
+### Process Management
+- PID files stored in `pids/` directory
+- Automatic process detection and cleanup
+- Graceful shutdown with timeout handling
+
+## Key Configuration
+
+Main configuration options (see [setup.md](setup.md) for complete list):
+
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_API_KEY` | Your OpenAI API key (required) |
+| `STATIC_DATA_PATH` | Path to static documentation files |
+| `DYNAMIC_DATA_PATH` | Path to onchain data files |
+| `TAVILY_API_KEY` | API key for web search (optional) |
+| `MEM0_API_KEY` | API key for conversation memory (optional) |
 
 ## API Documentation
 
@@ -206,65 +254,15 @@ Once the server is running, visit:
 - **Interactive API Docs**: http://localhost:8000/docs
 - **ReDoc Documentation**: http://localhost:8000/redoc
 
-## Monitoring and Logs
-
-- Embedding creation logs: `embedding_creation.log`
-- API server logs: Console output
-- ChromaDB storage: `./chroma_db/` directory
-
-## Troubleshooting
-
-### Common Issues
-
-1. **"OPENAI_API_KEY must be set"**
-   - Ensure your `.env` file contains a valid OpenAI API key
-
-2. **"No data available. Please create embeddings first."**
-   - Run `python create_embeddings.py` to initialize the database
-
-3. **"Collection already exists with data"**
-   - Use `--clear` flag to recreate embeddings: `python create_embeddings.py --clear`
-
-4. **Rate limiting from OpenAI**
-   - The system includes automatic retry logic
-   - Consider reducing batch size: `--batch-size 10`
-
-### Performance Tips
-
-- **Faster embedding creation**: Increase `--batch-size` (but watch rate limits)
-- **Memory optimization**: Reduce `CHUNK_SIZE` in configuration
-- **Better accuracy**: Increase `max_chunks` in queries (but slower)
-
-## Development
-
-### Project Structure
-
-The project uses a clean, modular structure:
-- **Root level**: Contains entry point scripts and documentation
-- **`src/rag/`**: Contains RAG application logic (config, embeddings, API)
-- **`src/utils/`**: Contains utility modules for data processing
-- **`src/test/`**: Contains testing modules
-
-### Adding New Data Sources
-
-1. Place new documents in `data/data_sources/polkadot_network/` or `data/data_sources/polkadot_wiki/`
-2. Run `python create_embeddings.py` to process new documents
-3. The system will automatically detect and process new files
-
-### Customizing the AI
-
-- Modify prompts in `src/utils/qa_generator.py`
-- Adjust embedding parameters in `src/utils/embeddings.py`
-- Change chunking strategy in `src/utils/text_chunker.py`
-- Update configuration in `src/rag/config.py`
-
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch  
 3. Make your changes
-4. Test with `python run_tests.py`
+4. Test thoroughly
 5. Submit a pull request
+
+For detailed setup, troubleshooting, and development information, see [setup.md](setup.md).
 
 ## License
 
