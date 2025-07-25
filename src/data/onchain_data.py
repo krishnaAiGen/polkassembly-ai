@@ -110,6 +110,10 @@ class PolkassemblyDataFetcher:
             posts = response_data['items']
             if not posts:
                 break
+
+            total_count = response_data['totalCount']
+            if total_count:
+                max_items = total_count
                 
             all_posts.extend(posts)
             offset += limit
