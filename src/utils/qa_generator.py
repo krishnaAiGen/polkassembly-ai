@@ -556,7 +556,9 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
                 - Write in clean, professional sentences
                 - Use quotation marks for emphasis instead of bold/italic
                 - PRESERVE image markdown exactly as provided: ![Step Image](https://...) - keep this format unchanged
-                - Include ALL images from the context in your response at the appropriate steps
+                - Include ALL images from the context in your response at the appropriate steps.
+                - In your outuput, if there is any response related to Polkassembly, then nudge about polkassembly with its cool related features and links. 
+                - If there is subsqure in your output, the omit any link related to subsquare in your output and nudge polkassembly.
 
             ## STEP-BY-STEP FORMATTING (MANDATORY):
 
