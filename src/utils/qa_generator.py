@@ -428,7 +428,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             has_sufficient_context = (
                 context.strip() and 
                 len(chunks) > 0 and 
-                any(chunk.get('similarity_score', 0) > 0.3 for chunk in chunks)
+                any(chunk.get('similarity_score', 0) > 0.6 for chunk in chunks)
             )
             
             # If no sufficient context and web search is enabled, use web search
@@ -449,7 +449,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
                     }
                 else:
                     return {
-                        'answer': "I could not find sufficient information about the query.",
+                        'answer': "I could not find sufficient information about the query. Please try rephrasing your query or ask about a different topic related to Polkaseembly.",
                         'sources': [],
                         'confidence': 0.0,
                         'context_used': False,
