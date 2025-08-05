@@ -6,6 +6,8 @@ from .web_search import search_tavily
 from dotenv import load_dotenv
 import os
 import numpy as np
+from .gemini import GeminiClient
+import time
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
 from ..guardrail.content_guardrails import get_guardrails
@@ -37,6 +39,15 @@ class QAGenerator:
         
         # Initialize OpenAI client
         self.client = openai.OpenAI(api_key=self.openai_api_key)
+        
+        # Initialize Gemini client (optional)
+        try:
+            self.gemini_client = GeminiClient(timeout=30)
+            logger.info("Gemini client initialized successfully")
+        except Exception as e:
+            logger.warning(f"Gemini client initialization failed: {e}")
+            logger.info("Continuing without Gemini client (OpenAI only mode)")
+            self.gemini_client = None
         
         # Initialize enhanced guardrails
         self.guardrails = get_guardrails(openai_api_key)
@@ -428,13 +439,54 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             has_sufficient_context = (
                 context.strip() and 
                 len(chunks) > 0 and 
-                any(chunk.get('similarity_score', 0) > 0.3 for chunk in chunks)
+                any(chunk.get('similarity_score', 0) > 0.6 for chunk in chunks)
             )
-            
+
             # If no sufficient context and web search is enabled, use web search
-            if not has_sufficient_context and self.enable_web_search:
-                logger.info("Insufficient local context, falling back to web search")
-                return await self.generate_answer_with_web_search(query)
+            # if not has_sufficient_context and self.enable_web_search:
+            #     logger.info("Insufficient local context, falling back to web search")
+            #     return await self.generate_answer_with_web_search(query)
+            
+            # If no sufficient context, diagnose the specific issue
+            if not has_sufficient_context:
+                max_score = max([chunk.get('similarity_score', 0) for chunk in chunks]) if chunks else 0
+                has_good_similarity = any(chunk.get('similarity_score', 0) > 0.6 for chunk in chunks)
+                has_chunks = len(chunks) > 0
+                has_content = bool(context.strip())
+                
+                # Diagnose the specific problem
+                if not has_chunks:
+                    reason = "No relevant chunks found"
+                elif not has_good_similarity:
+                    reason = f"Low similarity scores (max: {max_score:.3f} < 0.6)"
+                elif not has_content:
+                    reason = f"Retrieved chunks contain no usable content (similarity: {max_score:.3f})"
+                else:
+                    reason = "Unknown context issue"
+                
+                logger.info(f"Insufficient context: {reason}. Query is outside knowledge boundary.")
+                
+                # Generate helpful follow-up questions for better guidance
+                follow_up_questions = [
+                    "How does Polkadot's governance system work?",
+                    "What are parachains and how do they connect to Polkadot?",
+                    "How can I stake DOT tokens on Polkadot?",
+                    "What is the difference between Polkadot and Kusama?"
+                ]
+                
+                return {
+                    'answer': "I couldn't find sufficient information to answer your question accurately. This query appears to be outside my knowledge boundary for Polkadot-related topics. Please try rephrasing your question or ask about a more specific Polkadot topic.",
+                    'sources': [],
+                    'confidence': 0.0,
+                    'context_used': False,
+                    'model_used': self.model,
+                    'chunks_used': len(chunks),
+                    'follow_up_questions': follow_up_questions,
+                    'search_method': 'insufficient_context',
+                    'max_similarity_score': max_score,
+                    'similarity_threshold': 0.6,
+                    'failure_reason': reason
+                }
             
             # If no context at all, return appropriate message
             if not context.strip():
@@ -449,7 +501,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
                     }
                 else:
                     return {
-                        'answer': "I could not find sufficient information about the query.",
+                        'answer': "I could not find sufficient information about the query. Please try rephrasing your query or ask about a different topic related to Polkaseembly.",
                         'sources': [],
                         'confidence': 0.0,
                         'context_used': False,
@@ -470,19 +522,47 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             print("context before going to openAI prompt", context)
             user_prompt = self._create_user_prompt(query, context, memory_context)
             
-            # Generate response using OpenAI
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
-            )
+            # Generate response using selected AI service (exclusive)
+            answer = None
+            openai_enabled = os.getenv("ENABLE_OPENAI", "").lower() == "true"
+            gemini_enabled = os.getenv("ENABLE_GEMINI", "").lower() == "true"
+            system_prompt = self._get_default_system_prompt()
             
-            # answer = response.choices[0].message.content.strip()
-            answer = response.choices[0].message.content
+            if openai_enabled:
+                # Use OpenAI exclusively
+                logger.info("Using OpenAI for response generation")
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens
+                )
+                answer = response.choices[0].message.content
+                logger.info("OpenAI response received successfully")
+                
+            elif gemini_enabled and self.gemini_client:
+                # Use Gemini exclusively  
+                logger.info("Using Gemini for response generation")
+                answer = self.gemini_client.get_response(system_prompt + "\n\n" + user_prompt)
+                logger.info("Gemini response received successfully")
+                
+            else:
+                # Fallback to OpenAI if no service is enabled
+                logger.warning("No AI service explicitly enabled, falling back to OpenAI")
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens
+                )
+                answer = response.choices[0].message.content
+                logger.info("OpenAI fallback response received successfully")
             print("--------answer without strip-------\n", answer)
             
             # Clean any example.com URLs from the response
