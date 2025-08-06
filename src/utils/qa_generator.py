@@ -430,8 +430,8 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
                 
                 return greeting_response
             
-            # Create context from chunks
-            context = self.create_context_from_chunks(chunks)
+            # Create context from chunks (increased length limit for large chunks)
+            context = self.create_context_from_chunks(chunks, max_context_length=8000)
             print("context from chunks", context)
             print("context after strip", context.strip())
             
