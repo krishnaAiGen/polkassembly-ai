@@ -442,7 +442,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
                 any(chunk.get('similarity_score', 0) > float(os.getenv("SIMILARITY_THRESHOLD")) for chunk in chunks)
             )
 
-            print(f"similarity type is {type(os.getenv('SIMILARITY_THRESHOLD'))} and value if {float(os.getenv("SIMILARITY_THRESHOLD"))}")
+            # print(f"similarity type is {type(os.getenv('SIMILARITY_THRESHOLD'))} and value if {float(os.getenv("SIMILARITY_THRESHOLD"))}")
 
             # If no sufficient context and web search is enabled, use web search
             # if not has_sufficient_context and self.enable_web_search:
