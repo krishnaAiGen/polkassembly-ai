@@ -268,7 +268,6 @@ async def query_chatbot(request: QueryRequest):
         static_max_score = max([chunk['similarity_score'] for chunk in static_chunks]) if static_chunks else 0
         dynamic_max_score = max([chunk['similarity_score'] for chunk in dynamic_chunks]) if dynamic_chunks else 0
 
-
         # Use chunks from the collection with higher max similarity score
         chunks = static_chunks if static_max_score >= dynamic_max_score else dynamic_chunks
         max_score = max(static_max_score, dynamic_max_score)
