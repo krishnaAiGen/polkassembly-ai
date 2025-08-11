@@ -370,6 +370,349 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
                 cleaned_lines.append(line)
         
         return '\n'.join(cleaned_lines)
+    
+    async def _handle_dynamic_query(self, query: str, route_result: dict, user_id: str) -> Dict[str, Any]:
+        """
+        Handle dynamic queries by fetching data from Polkassembly API and processing with Gemini
+        """
+        import httpx
+        import json
+        
+        try:
+            proposal_ids = route_result.get('ID', [])
+            proposal_type = route_result.get('proposal_type')
+            
+            if not proposal_ids or not proposal_type:
+                logger.error(f"Missing proposal IDs or type: {route_result}")
+                return self._fallback_to_static_response(query, user_id)
+            
+            # Convert proposal IDs to strings
+            proposal_ids = [str(pid) for pid in proposal_ids]
+            
+            # Map proposal types to API endpoints - use exact format only
+            if proposal_type == "ReferendumV2":
+                api_endpoints = ["ReferendumV2"]
+            else:  # Discussion
+                api_endpoints = ["Discussion"]
+            
+            # Fetch data for all proposal IDs
+            all_proposal_data = []
+            
+            # Set required headers for Polkassembly API
+            headers = {
+                "x-network": "polkadot",
+                "Content-Type": "application/json"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for proposal_id in proposal_ids:
+                    endpoint = api_endpoints[0]  # Only one endpoint per type now
+                    api_url = f"https://polkadot.polkassembly.io/api/v2/{endpoint}/{proposal_id}"
+                    
+                    logger.info(f"Making GET request to: {api_url}")
+                    logger.info(f"Headers: {headers}")
+                    
+                    try:
+                        response = await client.get(api_url, headers=headers)
+                        logger.info(f"Response status: {response.status_code}")
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            logger.info(f"Response data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+                            all_proposal_data.append({
+                                'id': proposal_id,
+                                'data': data,
+                                'type': proposal_type,
+                                'endpoint': endpoint
+                            })
+                            logger.info(f"Successfully fetched data for {proposal_type} {proposal_id}")
+                        else:
+                            logger.warning(f"API returned status {response.status_code} for {endpoint}/{proposal_id}")
+                            try:
+                                error_text = response.text
+                                logger.warning(f"Error response body: {error_text[:200]}")
+                            except:
+                                logger.warning("Could not read error response body")
+                            
+                            # Add error entry
+                            all_proposal_data.append({
+                                'id': proposal_id,
+                                'data': None,
+                                'type': proposal_type,
+                                'error': f"HTTP {response.status_code} from {api_url}"
+                            })
+                            
+                    except httpx.HTTPStatusError as e:
+                        logger.error(f"HTTP error {e.response.status_code} for {endpoint}/{proposal_id}")
+                        try:
+                            error_text = e.response.text
+                            logger.error(f"HTTP error response: {error_text[:200]}")
+                        except:
+                            logger.error("Could not read HTTP error response")
+                        
+                        # Add error entry
+                        all_proposal_data.append({
+                            'id': proposal_id,
+                            'data': None,
+                            'type': proposal_type,
+                            'error': f"HTTP error {e.response.status_code}"
+                        })
+                        
+                    except Exception as e:
+                        logger.error(f"Error fetching {endpoint}/{proposal_id}: {e}")
+                        # Add error entry
+                        all_proposal_data.append({
+                            'id': proposal_id,
+                            'data': None,
+                            'type': proposal_type,
+                            'error': f"Request failed: {str(e)}"
+                        })
+            
+            if not all_proposal_data or all(item.get('data') is None for item in all_proposal_data):
+                logger.error("No data fetched from API")
+                return self._fallback_to_static_response(query, user_id)
+            
+            # Process data with Gemini
+            return await self._process_dynamic_data_with_gemini(query, all_proposal_data, user_id)
+            
+        except Exception as e:
+            logger.error(f"Error in _handle_dynamic_query: {e}")
+            return self._fallback_to_static_response(query, user_id)
+    
+    async def _process_dynamic_data_with_gemini(self, query: str, proposal_data: list, user_id: str) -> Dict[str, Any]:
+        """
+        Process fetched proposal data using Gemini to generate natural language response
+        """
+        import json
+        
+        try:
+            # Create comprehensive prompt with all proposal data
+            data_context = ""
+            sources = []
+            successful_fetches = 0
+            
+            for item in proposal_data:
+                proposal_id = item['id']
+                data = item.get('data')
+                proposal_type = item['type']
+                endpoint = item.get('endpoint', 'unknown')
+                error = item.get('error')
+                
+                if data:
+                    # Format the data for context - FULL DATA, no truncation
+                    data_json = json.dumps(data, indent=2)
+                    data_context += f"\n\n=== {proposal_type} {proposal_id} ===\n{data_json}\n"
+                    successful_fetches += 1
+                    
+                    # Add source with correct endpoint
+                    sources.append({
+                        'title': f'{proposal_type} {proposal_id}',
+                        'url': f'https://polkadot.polkassembly.io/api/v2/{endpoint}/{proposal_id}',
+                        'source_type': 'polkassembly_api',
+                        'similarity_score': 1.0
+                    })
+                else:
+                    # Add error information to context
+                    data_context += f"\n\n=== ERROR for {proposal_type} {proposal_id} ===\n"
+                    data_context += f"Failed to fetch data: {error or 'Unknown error'}\n"
+            
+            # Create Gemini prompt
+            gemini_prompt = f"""
+You are a Polkadot governance expert. A user asked: "{query}"
+
+Here is the relevant proposal data from Polkassembly API:
+{data_context}
+
+Instructions:
+- Answer the user's question using the provided proposal data
+- Be specific and accurate, citing exact numbers, dates, and details from the data
+- If asked about votes, provide vote counts, percentages, and outcomes
+- If asked about proposal amounts, provide exact figures
+- If asked about descriptions, summarize the key points
+- Use natural, conversational language
+- If multiple proposals are mentioned, address each one clearly
+- Include relevant dates, statuses, and other important metadata
+- If some proposals had errors fetching data, mention this and provide what information is available
+
+Note: Successfully fetched data for {successful_fetches} out of {len(proposal_data)} requested proposals.
+
+Provide a comprehensive answer based on the data above.
+"""
+            
+
+            # Get response from Gemini
+            if self.gemini_client:
+                answer = self.gemini_client.get_response(gemini_prompt)
+                print(f"\n\n  gemini_prompt {gemini_prompt}\n\n")
+            else:
+                # Fallback to OpenAI if Gemini not available
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "You are a Polkadot governance expert."},
+                        {"role": "user", "content": gemini_prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=self.max_tokens
+                )
+                answer = response.choices[0].message.content
+            
+            # Handle memory
+            if self.memory_manager and self.memory_manager.enabled:
+                self.memory_manager.add_user_query(query, user_id)
+                self.memory_manager.add_assistant_response(answer, user_id)
+            
+            return {
+                'answer': answer,
+                'sources': sources,
+                'confidence': 0.95,
+                'context_used': True,
+                'model_used': 'gemini' if self.gemini_client else self.model,
+                'chunks_used': len(proposal_data),
+                'search_method': 'polkassembly_api',
+                'proposal_ids': [item['id'] for item in proposal_data],
+                'proposal_types': [item['type'] for item in proposal_data]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing dynamic data with Gemini: {e}")
+            return self._fallback_to_static_response(query, user_id)
+    
+    def _fallback_to_static_response(self, query: str, user_id: str) -> Dict[str, Any]:
+        """
+        Fallback response when dynamic query processing fails
+        """
+        return {
+            'answer': "I encountered an issue fetching the specific proposal data you requested. Please try rephrasing your question or check if the proposal ID is correct. You can also try asking about general Polkadot governance topics.",
+            'sources': [
+                {
+                    'title': 'Polkadot Governance',
+                    'url': 'https://polkadot.polkassembly.io',
+                    'source_type': 'platform',
+                    'similarity_score': 0.8
+                }
+            ],
+            'confidence': 0.3,
+            'context_used': False,
+            'model_used': self.model,
+            'chunks_used': 0,
+            'search_method': 'dynamic_fallback',
+            'error': 'Failed to fetch proposal data'
+        }
+
+    def route_query(self, query):
+        """
+        Route query to appropriate data source using Gemini AI analysis.
+        Returns JSON with data_source, IDs, and proposal_type if applicable.
+        """
+        import json
+        
+        # Prompt for Gemini to analyze the query
+        analysis_prompt = f"""
+Analyze this user query and determine which data source it should use:
+
+Query: "{query}"
+
+Data Sources:
+1. STATIC - For general topics like:
+   - Governance/OpenGov concepts
+   - Ambassador Programme info  
+   - Parachains & AnV explanations
+   - Hyperbridge, JAM definitions
+   - Dashboard info (Frequency, People, Stellaswap)
+   - Wiki pages, how-to guides
+
+2. DYNAMIC - For specific proposals with IDs like:
+   - "proposal ID 1679", "proposal 1622"
+   - "referenda 1622", "referendum 1622" 
+   - "discussion 1104"
+   - Any query mentioning specific proposal numbers
+
+Instructions:
+- If query mentions specific numbers (proposal ID, referenda, discussions), use DYNAMIC
+- Extract any proposal IDs mentioned (look for numbers after "proposal", "referenda", "referendum", "discussion")
+- Determine proposal type:
+  * "Discussion" ONLY if explicitly mentions "discussion"
+  * "ReferendumV2" for all other cases (including "proposal ID", "proposal", "referenda", "referendum")
+- For general concepts/explanations without specific IDs, use STATIC
+
+IMPORTANT: If data_source is "dynamic", always include the ID numbers and set proposal_type to "ReferendumV2" unless it explicitly mentions "discussion".
+
+Respond ONLY with valid JSON in this exact format:
+{{
+  "data_source": "static" or "dynamic",
+  "ID": [list of numbers if found, empty array if none],
+  "proposal_type": "ReferendumV2" or "Discussion" or null
+}}
+"""
+
+        try:
+            # Use Gemini to analyze the query
+            if self.gemini_client:
+                response = self.gemini_client.get_response(analysis_prompt)
+                
+                # Try to parse JSON response
+                try:
+                    result = json.loads(response.strip())
+                    
+                    # Post-process the result to handle missing IDs for dynamic queries
+                    if result.get('data_source') == 'dynamic':
+                        # If dynamic but no IDs found, try to extract them manually
+                        if not result.get('ID'):
+                            import re
+                            # Look for numbers in the query
+                            numbers = re.findall(r'\b\d+\b', query)
+                            if numbers:
+                                result['ID'] = [int(num) for num in numbers]
+                                logger.info(f"Manually extracted IDs: {result['ID']}")
+                        
+                        # If dynamic but no proposal type, default to ReferendumV2
+                        if not result.get('proposal_type'):
+                            # Only set to Discussion if explicitly mentioned
+                            if 'discussion' in query.lower():
+                                result['proposal_type'] = 'Discussion'
+                            else:
+                                result['proposal_type'] = 'ReferendumV2'
+                                logger.info(f"Defaulted proposal_type to ReferendumV2")
+                    
+                    return result
+                    
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, extract from response text
+                    if "dynamic" in response.lower():
+                        # Try to extract numbers manually
+                        import re
+                        numbers = re.findall(r'\b\d+\b', query)
+                        proposal_type = 'Discussion' if 'discussion' in query.lower() else 'ReferendumV2'
+                        
+                        return {
+                            "data_source": "dynamic",
+                            "ID": [int(num) for num in numbers] if numbers else [],
+                            "proposal_type": proposal_type
+                        }
+                    else:
+                        return {
+                            "data_source": "static",
+                            "ID": [],
+                            "proposal_type": None
+                        }
+            else:
+                # Fallback if no Gemini client
+                return {
+                    "data_source": "static",
+                    "ID": [],
+                    "proposal_type": None
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in route_query: {e}")
+            # Default fallback
+            return {
+                "data_source": "static",
+                "ID": [],
+                "proposal_type": None
+            }
+        
 
     async def generate_answer(self, 
                        query: str, 
@@ -414,6 +757,8 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             #         'search_method': f'blocked_{category}'
             #     }
             
+            
+
             # Check if this is a greeting message
             if self._is_greeting_message(query):
                 logger.info("Detected greeting message, providing Polkassembly introduction")
@@ -429,6 +774,18 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
                     self.memory_manager.add_assistant_response(greeting_response['answer'], user_id)
                 
                 return greeting_response
+            
+            # Route query to determine data source
+            logger.info(f"Routing query: '{query[:50]}...'")
+            route_result = self.route_query(query)
+            logger.info(f"Route result: {route_result}")
+            
+            # Handle dynamic data source (specific proposal IDs)
+            if route_result.get('data_source') == 'dynamic' and route_result.get('ID'):
+                logger.info(f"Fetching dynamic data for IDs: {route_result['ID']}")
+                return await self._handle_dynamic_query(query, route_result, user_id)
+            
+            # Continue with static data processing (existing logic)
             
             # Create context from chunks (increased length limit for large chunks)
             context = self.create_context_from_chunks(chunks, max_context_length=8000)

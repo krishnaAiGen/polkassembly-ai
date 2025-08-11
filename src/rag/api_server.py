@@ -254,7 +254,7 @@ async def query_chatbot(request: QueryRequest):
             query=request.question,
             n_results=request.max_chunks
         )
-        print("\033[92mAll the static chunks are\033[0m", static_chunks)
+        # print("\033[92mAll the static chunks are\033[0m", static_chunks)
 
         # Apply reranking to prioritize chunks with images
         static_chunks = rerank_static_chunks(static_chunks)

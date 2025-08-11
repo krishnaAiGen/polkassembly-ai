@@ -57,13 +57,20 @@ class SupportedNetworks(Enum):
     KUSAMA = "kusama"
 
 class PolkassemblyDataFetcher:
-    def __init__(self, network: str = "polkadot"):
+    def __init__(self, network: str = "polkadot", data_dir: str = None):
         self.network = network
         self.base_url = f"https://{network}.polkassembly.io/api/v2"
         self.headers = {
             'Content-Type': 'application/json',
         }
-        self.data_dir = "data/dynamic_kusama_polka"
+        # Use specified data directory or default to the requested path
+        if data_dir:
+            self.data_dir = data_dir
+        else:
+            # Default to the specified onchain_data directory
+            script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            self.data_dir = os.path.join(script_dir, "data", "onchain_data")
+        
         self._ensure_data_directory()
 
     def _ensure_data_directory(self):
@@ -145,6 +152,7 @@ class PolkassemblyDataFetcher:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         for proposal_type in ProposalType:
+            logger.info(f"proposal_type is {proposal_type}")
             try:
                 if proposal_type == ProposalType.REFERENDUM_V2:
                     # ReferendumV2 requires origin_type parameter
@@ -177,14 +185,21 @@ class PolkassemblyDataFetcher:
                 logger.error(f"Error processing {proposal_type.value}: {e}")
                 continue
 
-def fetch_onchain_data(max_items_per_type: int = 1000):
+def fetch_onchain_data(max_items_per_type: int = 1000, data_dir: str = None):
     """Main function to fetch onchain data for all supported networks"""
+    # Use the specified directory path
+    if not data_dir:
+        data_dir = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/onchain_data"
+    
+    logger.info(f"Storing onchain data in: {data_dir}")
+    
     for network in SupportedNetworks:
+        logger.info(f"network is {network}")
         try:
             logger.info(f"Starting data fetch for {network.value}...")
             
-            # Initialize fetcher
-            fetcher = PolkassemblyDataFetcher(network=network.value)
+            # Initialize fetcher with specified data directory
+            fetcher = PolkassemblyDataFetcher(network=network.value, data_dir=data_dir)
             
             # Fetch and save all data
             fetcher.fetch_and_save_all_data(max_items_per_type=max_items_per_type)
