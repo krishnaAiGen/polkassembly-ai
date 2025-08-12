@@ -8,7 +8,7 @@ class PolkassemblySearch:
     def __init__(self):
         """
         Initialize Algolia search client with environment variables
-        Make sure to set NEXT_PUBLIC_ALGOLIA_APP_ID and NEXT_PUBLIC_ALGOLIA_SEARCH_API_KEY
+        Make sure to set ALGOLIA_APP_ID and ALGOLIA_SEARCH_API_KEY
         """
         self.app_id = os.getenv('ALGOLIA_APP_ID')
         self.search_api_key = os.getenv('ALGOLIA_SEARCH_API_KEY')
