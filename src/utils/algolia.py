@@ -469,20 +469,9 @@ def configure_index_settings_sync() -> bool:
 if __name__ == "__main__":
     async def main():
         """Example usage of the search functions"""
-        try:
-            print(f"Starting Algolia search with credentials:")
-            print(f"App ID: {os.getenv('ALGOLIA_APP_ID')}")
-            print(f"API Key: {os.getenv('ALGOLIA_SEARCH_API_KEY')[:5]}...{os.getenv('ALGOLIA_SEARCH_API_KEY')[-4:] if os.getenv('ALGOLIA_SEARCH_API_KEY') else 'None'}")
-            
-            
-            print("\nSearching for 'clarys' - 5 most recent posts:")
+        try:            
             results = await search_posts("clarys", 5)
-            print(f"Found {len(results)} results:")
-                       
-            print("\nSearching for 'CLARYS' (uppercase):")
-            results_upper = await search_posts("CLARYS", 10)
-            print(f"Found {len(results_upper)} results with uppercase query")
-            
+                                 
             print(f"\nFound {len(results)} results:")
             for i, post in enumerate(results, 1):
                 print(f"\n{i}. {post.get('title', 'Untitled')}")
