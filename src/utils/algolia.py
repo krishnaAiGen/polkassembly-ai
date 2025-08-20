@@ -3,6 +3,10 @@ import asyncio
 from algoliasearch.search.client import SearchClient
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 class PolkassemblySearch:
     def __init__(self):
