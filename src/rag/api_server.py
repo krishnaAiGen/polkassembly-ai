@@ -259,10 +259,11 @@ async def query_chatbot(request: QueryRequest):
         # Apply reranking to prioritize chunks with images
         static_chunks = rerank_static_chunks(static_chunks)
         
-        dynamic_chunks = dynamic_embedding_manager.search_similar_chunks(
-            query=request.question,
-            n_results=request.max_chunks
-        )
+        # dynamic_chunks = dynamic_embedding_manager.search_similar_chunks(
+        #     query=request.question,
+        #     n_results=request.max_chunks
+        # )
+        dynamic_chunks = []
        
         # Get max similarity score from each collection
         static_max_score = max([chunk['similarity_score'] for chunk in static_chunks]) if static_chunks else 0
