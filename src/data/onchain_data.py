@@ -78,13 +78,13 @@ class PolkassemblyDataFetcher:
         os.makedirs(self.data_dir, exist_ok=True)
 
     def fetch_posts(self, proposal_type: ProposalType, origin_type: Optional[OriginType] = None, 
-                   limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+                   limit: int = 50, offset: int = 0) -> Dict[str, Any]:
         """Fetch posts from Polkassembly API"""
         url = f"{self.base_url}/{proposal_type.value}"
 
         params = {
             'limit': limit,
-            'offset': offset
+            'page': offset
         }
         
         if origin_type:
@@ -103,8 +103,8 @@ class PolkassemblyDataFetcher:
                                 max_items: int = 1000) -> List[Dict]:
         """Fetch all posts for a specific proposal type with pagination"""
         all_posts = []
-        offset = 0
-        limit = 10
+        offset = 10
+        limit = 50
 
         logger.info(f"Fetching {proposal_type.value} posts for {self.network}...")
         
