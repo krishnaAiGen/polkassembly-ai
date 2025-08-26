@@ -103,7 +103,7 @@ class PolkassemblyDataFetcher:
                                 max_items: int = 1000) -> List[Dict]:
         """Fetch all posts for a specific proposal type with pagination"""
         all_posts = []
-        offset = 10
+        offset = 1
         limit = 50
 
         logger.info(f"Fetching {proposal_type.value} posts for {self.network}...")
@@ -123,7 +123,7 @@ class PolkassemblyDataFetcher:
                 max_items = total_count
                 
             all_posts.extend(posts)
-            offset += limit
+            offset += 1
             time.sleep(0.1)  # Rate limiting
             
             logger.info(f"Fetched {len(all_posts)} {proposal_type.value} posts so far...")
