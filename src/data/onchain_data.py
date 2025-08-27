@@ -78,7 +78,7 @@ class PolkassemblyDataFetcher:
         os.makedirs(self.data_dir, exist_ok=True)
 
     def fetch_posts(self, proposal_type: ProposalType, origin_type: Optional[OriginType] = None, 
-                   limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+                   limit: int = 50, offset: int = 1) -> Dict[str, Any]:
         """Fetch posts from Polkassembly API"""
         url = f"{self.base_url}/{proposal_type.value}"
 
@@ -88,7 +88,7 @@ class PolkassemblyDataFetcher:
         }
         
         if origin_type:
-            params['origin_type'] = origin_type.value
+            params['origin'] = origin_type.value
 
         try:
             response = requests.get(url, params=params, headers=self.headers)
