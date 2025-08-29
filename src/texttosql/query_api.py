@@ -8,8 +8,43 @@ try:
 except ImportError:
     # Fall back to direct import (when run as script)
     from query2sql import Query2SQL
+
 import json
+import sys
+import os
 from typing import Optional, List, Dict, Any
+from datetime import datetime
+
+# Add SlackBot for error notifications
+try:
+    # Try relative import first (when imported as module)
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils'))
+    from slack_bot import SlackBot
+except ImportError:
+    SlackBot = None
+
+def send_error_to_slack(query: str, error: str, error_source: str = "Query2SQL") -> None:
+    """Send error notification to Slack channel"""
+    if not SlackBot:
+        return
+    
+    try:
+        slack_bot = SlackBot()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        error_context = {
+            "query": query,
+            "timestamp": timestamp,
+            "error_source": error_source,
+            "error_details": str(error)
+        }
+        
+        slack_bot.post_error_to_slack(
+            "Query processing failed", 
+            context=error_context
+        )
+        print("Error notification sent to Slack")
+    except Exception as slack_error:
+        print(f"Failed to send error notification to Slack: {slack_error}")
 
 def ask_question(question: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> dict:
     """
@@ -31,13 +66,16 @@ def ask_question(question: str, conversation_history: Optional[List[Dict[str, An
         return result
         
     except Exception as e:
+        # Send error notification to Slack
+        send_error_to_slack(question, str(e), "Query2SQL")
+        
         return {
             "original_query": question,
             "sql_query": None,
             "result_count": 0,
             "results": [],
             "columns": [],
-            "natural_response": f"Error processing your question: {str(e)}",
+            "natural_response": f"I'm having trouble processing your query. Please try again or rephrase your question in the next prompt",
             "success": False,
             "error": str(e)
         }

@@ -9,9 +9,11 @@ import numpy as np
 from .gemini import GeminiClient
 import time
 import sys
+from datetime import datetime
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
 from ..guardrail.content_guardrails import get_guardrails
+from .slack_bot import SlackBot
 
 # Import ask_question from the texttosql module
 from ..texttosql.query_api import ask_question
@@ -41,12 +43,15 @@ class QAGenerator:
         self.web_search_context_size = web_search_context_size
         self.enable_memory = enable_memory
         
-        # Initialize OpenAI client
-        self.client = openai.OpenAI(api_key=self.openai_api_key)
+        # Timeout configuration
+        self.api_timeout = float(os.getenv('API_TIMEOUT', '10'))  # Default 10 seconds
         
-        # Initialize Gemini client (optional)
+        # Initialize OpenAI client with timeout
+        self.client = openai.OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
+        
+        # Initialize Gemini client (optional) with timeout
         try:
-            self.gemini_client = GeminiClient(timeout=30)
+            self.gemini_client = GeminiClient(timeout=self.api_timeout)
             logger.info("Gemini client initialized successfully")
         except Exception as e:
             logger.warning(f"Gemini client initialization failed: {e}")
@@ -63,6 +68,37 @@ class QAGenerator:
             logger.info("Memory functionality enabled")
         else:
             logger.info("Memory functionality disabled")
+        
+        # Initialize Slack bot for error notifications
+        try:
+            self.slack_bot = SlackBot()
+            logger.info("Slack bot initialized for error notifications")
+        except Exception as e:
+            logger.warning(f"Slack bot initialization failed: {e}")
+            logger.info("Continuing without Slack notifications")
+            self.slack_bot = None
+    
+    def send_error_to_slack(self, query: str, error: str, error_source: str = "Klara") -> None:
+        """Send error notification to Slack channel"""
+        if not self.slack_bot:
+            return
+        
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+            error_context = {
+                "query": query,
+                "timestamp": timestamp,
+                "error_source": error_source,
+                "error_details": str(error)
+            }
+            
+            self.slack_bot.post_error_to_slack(
+                "Query processing failed", 
+                context=error_context
+            )
+            logger.info("Error notification sent to Slack")
+        except Exception as slack_error:
+            logger.error(f"Failed to send error notification to Slack: {slack_error}")
     
     def create_context_from_chunks(self, chunks: List[Dict[str, Any]], max_context_length: int = 4000) -> str:
         """
@@ -410,6 +446,49 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             'error': 'Failed to fetch proposal data'
         }
 
+    def analyze_query_with_memory(self, query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> str:
+        """Analyze query with conversation history to add memory/context awareness"""
+        try:
+            # If no conversation history or Gemini client not available, return original query
+            if not conversation_history or not self.gemini_client:
+                return query
+            
+            # Create prompt for Gemini to analyze query with conversation history
+            analysis_prompt = f"""
+            You are analyzing a user query in the context of previous conversation to determine if the current query needs modification for better understanding.
+
+            Previous Conversation History: {conversation_history}
+            
+            Current User Query: {query}
+            
+            Instructions:
+            1. Analyze if the current query relates to or references anything from the previous conversation
+            2. If the query is a follow-up question that needs context from previous conversation, modify it to be more complete and standalone
+            3. If the query is independent and doesn't need previous context, keep it exactly the same
+            4. Only modify the query if it's clearly a follow-up that would be unclear without context
+            
+            Examples:
+            - If previous conversation was about "treasury proposals" and current query is "show me the recent ones", modify to "show me the recent treasury proposals"
+            - If previous conversation was about "Polkadot governance" and current query is "what about Kusama?", modify to "what about Kusama governance?"
+            - If current query is complete and standalone like "show me all referendums", keep it the same
+            
+            Return only the final query (either original or modified). Do not include any explanations or additional text.
+            """
+            
+            # Get analysis from Gemini
+            analyzed_query = self.gemini_client.get_response(analysis_prompt)
+            
+            # Clean up the response (remove any extra formatting)
+            analyzed_query = analyzed_query.strip().strip('"').strip("'")
+            
+            logger.info(f"Query analysis - Original: '{query}' -> Analyzed: '{analyzed_query}'")
+            return analyzed_query
+            
+        except Exception as e:
+            logger.error(f"Error in query analysis with memory: {e}")
+            # Return original query if analysis fails
+            return query
+
     def route_query(self, query):
         """
         Route query to appropriate data source using Gemini AI analysis.
@@ -573,6 +652,10 @@ Respond ONLY with valid JSON in this exact format:
             
             # Continue with static data processing (existing logic)
             
+            # Analyze query with conversation history for memory/context awareness (STATIC queries only)
+            analyzed_query = self.analyze_query_with_memory(query, conversation_history)
+            logger.info(f"Using analyzed query for static processing: '{analyzed_query}...'")
+            
             # Create context from chunks (increased length limit for large chunks)
             context = self.create_context_from_chunks(chunks, max_context_length=8000)
             print("context from chunks", context)
@@ -651,16 +734,16 @@ Respond ONLY with valid JSON in this exact format:
             # Get memory context if memory is enabled
             memory_context = ""
             if self.memory_manager and self.memory_manager.enabled:
-                memory_context = self.memory_manager.get_memory_context(query, user_id)
-                # Add user query to memory
-                self.memory_manager.add_user_query(query, user_id)
+                memory_context = self.memory_manager.get_memory_context(analyzed_query, user_id)
+                # Add analyzed query to memory
+                self.memory_manager.add_user_query(analyzed_query, user_id)
             
             # Create system prompt
             system_prompt = custom_prompt or self._get_default_system_prompt()
             
-            # Create user prompt with context, memory, and query
+            # Create user prompt with context, memory, and analyzed query
             print("context before going to openAI prompt", context)
-            user_prompt = self._create_user_prompt(query, context, memory_context, conversation_history)
+            user_prompt = self._create_user_prompt(analyzed_query, context, memory_context, conversation_history)
             
             # Generate response using selected AI service (exclusive)
             answer = None
@@ -743,22 +826,31 @@ Respond ONLY with valid JSON in this exact format:
             return result
             
         except Exception as e:
-            logger.error(f"Error generating answer: {e}")
+            logger.error(f"Error processing query: {e}")
+            
+            # Send error notification to Slack
+            self.send_error_to_slack(query, str(e))
             
             # If local generation fails and web search is enabled, try web search as fallback
             if self.enable_web_search:
                 logger.info("Local generation failed, trying web search fallback")
                 return await self.generate_answer_with_web_search(query, user_id, conversation_history)
             
+            # Return user-friendly error response
             return {
-                'answer': "I encountered an error while generating the answer. Please try again.",
+                'answer': "I'm having trouble processing your query. Please try again or rephrase your question in the next prompt.",
                 'sources': [],
                 'confidence': 0.0,
-                'follow_up_questions': self._get_fallback_follow_ups(query),
                 'context_used': False,
                 'model_used': self.model,
                 'chunks_used': 0,
-                'search_method': 'error'
+                'search_method': 'error_fallback',
+                'error': True,
+                'follow_up_questions': [
+                    "How does Polkadot's governance system work?",
+                    "What are the benefits of staking DOT tokens?", 
+                    "How do parachains connect to Polkadot?"
+                ]
             }
     
     def _get_default_system_prompt(self) -> str:

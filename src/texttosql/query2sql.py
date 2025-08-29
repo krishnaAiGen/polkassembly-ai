@@ -16,6 +16,15 @@ from openai import OpenAI
 from contextlib import contextmanager
 import pandas as pd
 
+# Add Gemini client
+try:
+    import sys
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils'))
+    from gemini import GeminiClient
+except ImportError:
+    GeminiClient = None
+    print("Warning: Gemini client not available")
+
 # Load environment variables
 load_dotenv()
 
@@ -47,7 +56,21 @@ class Query2SQL:
         if not self.openai_api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         
-        self.openai_client = OpenAI(api_key=self.openai_api_key)
+        # Timeout configuration
+        self.api_timeout = float(os.getenv('API_TIMEOUT', '10'))  # Default 10 seconds
+        
+        self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
+        
+        # Initialize Gemini client (optional fallback)
+        self.gemini_client = None
+        if GeminiClient is not None:
+            try:
+                self.gemini_client = GeminiClient(timeout=self.api_timeout)
+                logger.info("Gemini client initialized successfully as fallback")
+            except Exception as e:
+                logger.warning(f"Gemini client initialization failed: {e}")
+                logger.info("Continuing without Gemini fallback (OpenAI only mode)")
+        
         self.table_name = os.getenv('POSTGRES_TABLE_NAME', 'governance_data')
         
         # Load schema information
@@ -85,7 +108,54 @@ class Query2SQL:
             raise
     
     def _get_table_schema(self) -> str:
-        """Generate a readable table schema description for OpenAI"""
+        """Load schema directly from JSON file"""
+        try:
+            schema_path_str = os.getenv('POSTGRES_SCHEMA_PATH')
+            if not schema_path_str:
+                raise ValueError("POSTGRES_SCHEMA_PATH environment variable not set")
+            
+            schema_path = Path(schema_path_str)
+            if not schema_path.exists():
+                raise FileNotFoundError(f"Schema file not found: {schema_path}")
+            
+            # Load the entire JSON file
+            with open(schema_path, 'r') as f:
+                schema_data = json.load(f)
+            
+            # Format the schema for OpenAI prompt
+            schema_parts = []
+            table_name = schema_data.get('table_name', self.table_name)
+            schema_parts.append(f"Table: {table_name}")
+            schema_parts.append("\nColumns:")
+            
+            columns_data = schema_data.get('columns', {})
+            for column, info in columns_data.items():
+                data_type = info.get('type', 'unknown')
+                description = info.get('description', 'No description')
+                possible_values = info.get('possible_values_description', [])
+                
+                # Add column with type and description
+                schema_line = f"  - {column} ({data_type}): {description}"
+                
+                # Add possible values if they exist
+                if possible_values:
+                    values_text = "; ".join(possible_values)
+                    schema_line += f" Possible values: {values_text}"
+                
+                schema_parts.append(schema_line)
+            
+            schema_text = "\n".join(schema_parts)
+            logger.info(f"Loaded schema directly from JSON file: {schema_path}")
+            return schema_text
+            
+        except Exception as e:
+            logger.error(f"Error loading schema directly from JSON: {e}")
+            # Fallback to old method if loading fails
+            logger.warning("Falling back to old schema generation method")
+            return self._get_table_schema_fallback()
+    
+    def _get_table_schema_fallback(self) -> str:
+        """Fallback method to generate schema from loaded schema_info"""
         schema_parts = []
         schema_parts.append(f"Table: {self.table_name}")
         schema_parts.append("\nColumns:")
@@ -107,10 +177,14 @@ class Query2SQL:
     
     @contextmanager
     def get_connection(self):
-        """Context manager for database connections"""
+        """Context manager for database connections with timeout"""
         conn = None
         try:
-            conn = psycopg2.connect(**self.db_config)
+            # Add timeout to database connection
+            db_config_with_timeout = self.db_config.copy()
+            db_config_with_timeout['connect_timeout'] = int(self.api_timeout)
+            
+            conn = psycopg2.connect(**db_config_with_timeout)
             yield conn
         except Exception as e:
             logger.error(f"Database connection error: {e}")
@@ -137,6 +211,7 @@ Conversation history: {conversation_history}
 DATABASE SCHEMA:
 {self.table_schema}
 
+
             CORE SQL GUIDELINES:
             1. Use ONLY existing columns from the schema above
             2. Table name: {self.table_name}
@@ -149,6 +224,14 @@ DATABASE SCHEMA:
             7. Proposal IDs: Use 'index' column
             8. Date filtering: Use DATE_TRUNC() for month/year, direct comparison for specific dates
             9. Text search: Use ILIKE for case-insensitive matching with % wildcards
+            10. When you filter data by taking keywords from query itself. Some you can take from title, however see the
+                param supported in the DATABASE SCHEMA and use the nearest matching param. 
+                For example: 
+                -can you show me some treasury proposals currently in voting
+                -Don't use SELECT "title", "index", "onchaininfo_status", "createdat" FROM governance_data WHERE "source_proposal_type" ILIKE \'%treasury%\' AND "onchaininfo_status" = \'Voting\' LIMIT 10;
+                -Don't use "onchaininfo_status" = \'Voting\' since Voting is not in params, use nearest which can be "onchaininfo_status" = \'Deciding\'
+                -You can find all possible supported params in description of DATABSE SCHEMA.
+
 
             CRITICAL NULL VALUE HANDLING:
 10. Many columns contain NULL values - use IS NOT NULL when querying for specific values
@@ -177,6 +260,7 @@ NaN VALUE HANDLING:
             - Avoid SELECT * unless specifically needed - it causes long responses
             - Use SELECT "title", "index", "onchaininfo_status", "createdat" for most queries
             - If you searching for index keep LIMIT upto 10 as there can be multi proposals with same index
+            - But, if somebody ask, proposals in voting then also use other attributes such as DecisionDepositPlaced, Submitted, ConfirmStarted, ConfirmAborted along with Deciding.
             
             EXAMPLE QUERIES:
             Single Query Examples:
@@ -217,12 +301,15 @@ NaN VALUE HANDLING:
 
             - Columns with NULL/NaN values: ['publicuser_profiledetails_publicsociallinks_0_platform', 'history_1_title', 'linkedpost_indexorhash', 'tags_1_network', 'index', 'onchaininfo_votemetrics', 'hash', 'content', 'onchaininfo_beneficiaries_0_assetid', 'publicuser_addresses_3', 'userid', 'history_0_title', 'onchaininfo_prepareperiodendsat', 'history_2_createdat_seconds', 'tags_0_network', 'publicuser_addresses_2', 'topic', 'onchaininfo_proposer', 'history_2_content', 'poll', 'publicuser_profiledetails_title', 'publicuser_profiledetails_publicsociallinks_0_url', 'onchaininfo_index', 'history_1_createdat_nanoseconds', 'onchaininfo_beneficiaries_0_amount', 'history_1_content', 'onchaininfo_votemetrics_bareayes_value', 'publicuser_profilescore', 'onchaininfo_decisionperiodendsat', 'history_0_content', 'tags_0_lastusedat', 'tags_2_lastusedat', 'tags_2_value', 'id', 'tags_1_value', 'history_0_createdat_seconds', 'updatedat', 'onchaininfo_origin', 'publicuser_profiledetails_coverimage', 'onchaininfo_votemetrics_nay_count', 'onchaininfo_votemetrics_aye_count', 'createdat', 'history_2_title', 'onchaininfo_votemetrics_aye_value', 'publicuser_profiledetails_bio', 'history_0_createdat_nanoseconds', 'publicuser_profiledetails_image', 'linkedpost_proposaltype', 'onchaininfo_beneficiaries_0_address', 'publicuser_addresses_0', 'publicuser_rank', 'tags_1_lastusedat', 'tags_0_value', 'publicuser_addresses_1', 'onchaininfo_votemetrics_nay_value', 'onchaininfo_votemetrics_support_value', 'onchaininfo_hash', 'onchaininfo_reward', 'publicuser_id', 'onchaininfo_description', 'publicuser_addresses_4', 'history_1_createdat_seconds', 'onchaininfo_curator', 'history_2_createdat_nanoseconds', 'publicuser_createdat', 'publicuser_username', 'tags_2_network']
 
+            Very very Important Rule:
+            - For every query you generate, you must add a filter of source_proposal_type = 'ReferendumV2' unless, otherwise, specified that somebody needs info on ChildBounty, FellowshipReferendum and Bounty.
+            
             Natural Language Query: {natural_query}
             
             SQL Query:
             """
             
-            print(f"sql prompt, {system_prompt}")
+            # print(f"sql prompt, {system_prompt}")
             
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
@@ -298,8 +385,9 @@ NaN VALUE HANDLING:
     def generate_natural_response_multiple(self, natural_query: str, sql_queries: List[str], 
                                          all_results: List[Tuple[List[Dict[str, Any]], List[str]]], 
                                          conversation_history: Optional[List[Dict[str, Any]]] = None) -> str:
-        """Generate natural language response from multiple query results using OpenAI"""
+        """Generate natural language response from multiple query results - tries Gemini first, then OpenAI"""
         try:
+        
             # Combine results from all queries
             combined_summary = f"Executed {len(sql_queries)} queries for: {natural_query}\n\n"
             
@@ -364,6 +452,18 @@ NaN VALUE HANDLING:
             IMPORTANT: All data is public blockchain information. Show actual values, addresses, and details.
             """
             
+            # Try Gemini first as primary LLM
+            if self.gemini_client is not None:
+                try:
+                    logger.info("Using Gemini as primary LLM for natural response generation from multiple queries")
+                    natural_response = self.gemini_client.get_response(prompt)
+                    logger.info("Generated natural language response from multiple queries using Gemini")
+                    return natural_response
+                except Exception as gemini_error:
+                    logger.warning(f"Gemini failed for multiple queries, falling back to OpenAI: {gemini_error}")
+            
+            # Fallback to OpenAI
+            logger.info("Using OpenAI for natural response generation from multiple queries (fallback)")
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -375,20 +475,21 @@ NaN VALUE HANDLING:
             )
             
             natural_response = response.choices[0].message.content.strip()
-            logger.info("Generated natural language response from multiple queries")
+            logger.info("Generated natural language response from multiple queries using OpenAI")
             return natural_response
             
         except Exception as e:
             logger.error(f"Error generating natural response from multiple queries: {e}")
-            # Fallback response
+            # Final fallback response
             total_results = sum(len(results) for results, _ in all_results)
             return f"I executed {len(sql_queries)} queries for your question '{natural_query}' and found {total_results} total results, but I'm having trouble formatting the response."
     
     def generate_natural_response(self, natural_query: str, sql_query: str, 
                                 results: List[Dict[str, Any]], columns: List[str], 
                                 conversation_history: Optional[List[Dict[str, Any]]] = None) -> str:
-        """Generate natural language response from query results using OpenAI"""
+        """Generate natural language response from query results - tries Gemini first, then OpenAI"""
         try:
+        
             # Prepare results summary
             result_count = len(results)
             
@@ -499,7 +600,20 @@ NaN VALUE HANDLING:
             
             Focus on providing accurate, specific information from the query results.
             """
-            print(f"\n\n prompt: {prompt}")
+            # print(f"\n\n prompt: {prompt}")
+            
+            # Try Gemini first as primary LLM
+            if self.gemini_client is not None:
+                try:
+                    logger.info("Using Gemini as primary LLM for natural response generation")
+                    natural_response = self.gemini_client.get_response(prompt)
+                    logger.info("Generated natural language response using Gemini")
+                    return natural_response
+                except Exception as gemini_error:
+                    logger.warning(f"Gemini failed, falling back to OpenAI: {gemini_error}")
+            
+            # Fallback to OpenAI
+            logger.info("Using OpenAI for natural response generation (fallback)")
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -511,12 +625,12 @@ NaN VALUE HANDLING:
             )
             
             natural_response = response.choices[0].message.content.strip()
-            logger.info("Generated natural language response")
+            logger.info("Generated natural language response using OpenAI")
             return natural_response
             
         except Exception as e:
             logger.error(f"Error generating natural response: {e}")
-            # Fallback response
+            # Final fallback response
             return f"I found {len(results)} results for your query '{natural_query}', but I'm having trouble formatting the response. Here's a summary: The query returned {len(results)} rows from the database."
     
     def process_query(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
