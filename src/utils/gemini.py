@@ -12,7 +12,7 @@ def timeout_context(seconds):
     
     # Set the signal handler
     old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(seconds)
+    signal.alarm(int(seconds))
     
     try:
         yield
@@ -24,7 +24,7 @@ def timeout_context(seconds):
 class GeminiClient:
     """A client class for interacting with Google's Gemini 2.5 Flash model."""
     
-    def __init__(self, model_name="gemini-2.5-flash-lite", timeout=30):
+    def __init__(self, model_name="gemini-2.5-flash-lite", timeout=None):
         """
         Initialize the Gemini client.
         
@@ -40,7 +40,8 @@ class GeminiClient:
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set. Please check your .env file.")
         
-        self.timeout = timeout
+        # Get timeout from environment variable or use provided value
+        self.timeout = timeout if timeout is not None else float(os.getenv('API_TIMEOUT', '10'))
         self.model_name = model_name
         
         # Test API key validity during initialization

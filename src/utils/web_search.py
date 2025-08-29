@@ -65,6 +65,9 @@ async def search_tavily(query: str, min_score: float = 0.7) -> Tuple[str, List[D
         print("TAVILY_API_KEY not found in environment variables")
         return "", []
     
+    # Get timeout from environment variable
+    timeout = float(os.getenv('API_TIMEOUT', '10'))  # Default 10 seconds
+    
     url = "https://api.tavily.com/search"
     headers = {
         "Content-Type": "application/json"
@@ -81,7 +84,10 @@ async def search_tavily(query: str, min_score: float = 0.7) -> Tuple[str, List[D
     }
     
     try:
-        async with aiohttp.ClientSession() as session:
+        # Create timeout object for aiohttp
+        timeout_obj = aiohttp.ClientTimeout(total=timeout)
+        
+        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
             async with session.post(url, headers=headers, json=payload) as response:
                 response.raise_for_status()
                 raw_results = await response.json()

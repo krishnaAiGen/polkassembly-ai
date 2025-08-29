@@ -132,6 +132,11 @@ app.add_middleware(
 )
 
 # Request/Response models
+class ConversationMessage(BaseModel):
+    query: str = Field(..., description="Previous user query")
+    response: str = Field(..., description="Previous AI response")
+    timestamp: str = Field(..., description="ISO timestamp of the message")
+
 class QueryRequest(BaseModel):
     question: str = Field(..., description="The question to ask", min_length=1, max_length=500)
     user_id: str = Field(..., description="Unique user identifier", min_length=1, max_length=100)
@@ -139,6 +144,7 @@ class QueryRequest(BaseModel):
     max_chunks: int = Field(default=5, description="Maximum number of chunks to retrieve", ge=1, le=10)
     include_sources: bool = Field(default=True, description="Whether to include source information")
     custom_prompt: Optional[str] = Field(default=None, description="Custom system prompt for the AI")
+    conversation_history: Optional[List[ConversationMessage]] = Field(default=[], description="Previous conversation history")
 
 class Source(BaseModel):
     title: str
@@ -258,11 +264,6 @@ async def query_chatbot(request: QueryRequest):
 
         # Apply reranking to prioritize chunks with images
         static_chunks = rerank_static_chunks(static_chunks)
-        
-        # dynamic_chunks = dynamic_embedding_manager.search_similar_chunks(
-        #     query=request.question,
-        #     n_results=request.max_chunks
-        # )
         dynamic_chunks = []
        
         # Get max similarity score from each collection
@@ -306,7 +307,8 @@ async def query_chatbot(request: QueryRequest):
             query=request.question,
             chunks=chunks,
             custom_prompt=request.custom_prompt,
-            user_id=request.user_id
+            user_id=request.user_id,
+            conversation_history=request.conversation_history
         )
         
         # Format sources if requested

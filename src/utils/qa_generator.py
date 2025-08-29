@@ -8,9 +8,15 @@ import os
 import numpy as np
 from .gemini import GeminiClient
 import time
+import sys
+from datetime import datetime
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
 from ..guardrail.content_guardrails import get_guardrails
+from .slack_bot import SlackBot
+
+# Import ask_question from the texttosql module
+from ..texttosql.query_api import ask_question
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,12 +43,15 @@ class QAGenerator:
         self.web_search_context_size = web_search_context_size
         self.enable_memory = enable_memory
         
-        # Initialize OpenAI client
-        self.client = openai.OpenAI(api_key=self.openai_api_key)
+        # Timeout configuration
+        self.api_timeout = float(os.getenv('API_TIMEOUT', '10'))  # Default 10 seconds
         
-        # Initialize Gemini client (optional)
+        # Initialize OpenAI client with timeout
+        self.client = openai.OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
+        
+        # Initialize Gemini client (optional) with timeout
         try:
-            self.gemini_client = GeminiClient(timeout=30)
+            self.gemini_client = GeminiClient(timeout=self.api_timeout)
             logger.info("Gemini client initialized successfully")
         except Exception as e:
             logger.warning(f"Gemini client initialization failed: {e}")
@@ -59,6 +68,37 @@ class QAGenerator:
             logger.info("Memory functionality enabled")
         else:
             logger.info("Memory functionality disabled")
+        
+        # Initialize Slack bot for error notifications
+        try:
+            self.slack_bot = SlackBot()
+            logger.info("Slack bot initialized for error notifications")
+        except Exception as e:
+            logger.warning(f"Slack bot initialization failed: {e}")
+            logger.info("Continuing without Slack notifications")
+            self.slack_bot = None
+    
+    def send_error_to_slack(self, query: str, error: str, error_source: str = "Klara") -> None:
+        """Send error notification to Slack channel"""
+        if not self.slack_bot:
+            return
+        
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+            error_context = {
+                "query": query,
+                "timestamp": timestamp,
+                "error_source": error_source,
+                "error_details": str(error)
+            }
+            
+            self.slack_bot.post_error_to_slack(
+                "Query processing failed", 
+                context=error_context
+            )
+            logger.info("Error notification sent to Slack")
+        except Exception as slack_error:
+            logger.error(f"Failed to send error notification to Slack: {slack_error}")
     
     def create_context_from_chunks(self, chunks: List[Dict[str, Any]], max_context_length: int = 4000) -> str:
         """
@@ -97,7 +137,7 @@ class QAGenerator:
         
         return ''.join(context_parts)
     
-    async def generate_answer_with_web_search(self, query: str, user_id: str = "default_user") -> Dict[str, Any]:
+    async def generate_answer_with_web_search(self, query: str, user_id: str = "default_user", conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         Generate answer using OpenAI with web search-like knowledge
         
@@ -120,14 +160,19 @@ class QAGenerator:
             # Create a comprehensive system prompt for web search-like responses
             system_prompt = self._get_default_system_prompt()
             
-            # Create user prompt with memory context
+            # Create user prompt with memory context and conversation history
             user_prompt_parts = []
+            
+            # Add conversation history if available
+            if conversation_history:
+                user_prompt_parts.append(f"Conversation History: {conversation_history}")
+            
             if memory_context:
                 user_prompt_parts.append(f"Previous conversation context:\n{memory_context}")
             
-            user_prompt_parts.append(f"Question about Polkadot: {query}")
+            user_prompt_parts.append(f"Current Question about Polkadot: {query}")
             user_prompt = "\n\n".join(user_prompt_parts)
-
+            
             if os.getenv("WEB_SEARCH"):
                 try:
                     #do the web search first
@@ -144,18 +189,24 @@ class QAGenerator:
                         temperature=0.1,  # Lower temperature for more factual responses
                         max_tokens=self.max_tokens
                     )
-                    
                     answer = response.choices[0].message.content
-                    
-                    # Clean any example.com URLs from the response
-                    answer = self.clean_example_urls(answer)
-                    
-                    # answer = self.remove_double_asterisks(answer)
                     sources = []  # Initialize empty sources for fallback
             else:
                 #no web search
-                answer = "I couldn't find relevant information in the Polkadot knowledge base to answer your question based on web-search. Please try rephrasing your query or ask about a different topic related to Polkadot."
+                response = self.client.chat.completions.create(
+                    model="gpt-4o" if "gpt-4" in self.model or self.model == "gpt-3.5-turbo" else self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.1,  # Lower temperature for more factual responses
+                    max_tokens=self.max_tokens
+                )
+                answer = response.choices[0].message.content
                 sources = []
+            
+            # Clean any example.com URLs from the response
+            answer = self.clean_example_urls(answer)
             
             # Apply content guardrails but preserve markdown formatting
             # answer = self.guardrails.sanitize_response(answer)
@@ -169,25 +220,25 @@ class QAGenerator:
                 sources = sources[:np.random.randint(1, 4)]
             else:
                 sources = [
-                    {
-                        'title': 'Polkadot Knowledge Base',
-                        'url': 'https://polkadot.network',
-                        'source_type': 'web_search',
-                        'similarity_score': 0.9
-                    },
-                    {
-                        'title': 'Polkadot Wiki',
-                        'url': 'https://wiki.polkadot.network',
-                        'source_type': 'web_search',
-                        'similarity_score': 0.9
-                    },
-                    {
-                        'title': 'Polkadot Documentation',
-                        'url': 'https://docs.polkadot.network',
-                        'source_type': 'web_search',
-                        'similarity_score': 0.9
-                    }
-                ]
+                {
+                    'title': 'Polkadot Knowledge Base',
+                    'url': 'https://polkadot.network',
+                    'source_type': 'web_search',
+                    'similarity_score': 0.9
+                },
+                {
+                    'title': 'Polkadot Wiki',
+                    'url': 'https://wiki.polkadot.network',
+                    'source_type': 'web_search',
+                    'similarity_score': 0.9
+                },
+                {
+                    'title': 'Polkadot Documentation',
+                    'url': 'https://docs.polkadot.network',
+                    'source_type': 'web_search',
+                    'similarity_score': 0.9
+                }
+            ]
             
             # Generate follow-up questions for web search results
             follow_up_questions = self._get_fallback_follow_ups(query)
@@ -335,7 +386,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             'chunks_used': 0,
             'search_method': 'greeting_response'
         }
-    
+
     def remove_double_asterisks(self, text):
         return text.replace("**", "").replace("-", "")
     
@@ -371,212 +422,7 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
         
         return '\n'.join(cleaned_lines)
     
-    async def _handle_dynamic_query(self, query: str, route_result: dict, user_id: str) -> Dict[str, Any]:
-        """
-        Handle dynamic queries by fetching data from Polkassembly API and processing with Gemini
-        """
-        import httpx
-        import json
-        
-        try:
-            proposal_ids = route_result.get('ID', [])
-            proposal_type = route_result.get('proposal_type')
-            
-            if not proposal_ids or not proposal_type:
-                logger.error(f"Missing proposal IDs or type: {route_result}")
-                return self._fallback_to_static_response(query, user_id)
-            
-            # Convert proposal IDs to strings
-            proposal_ids = [str(pid) for pid in proposal_ids]
-            
-            # Map proposal types to API endpoints - use exact format only
-            if proposal_type == "ReferendumV2":
-                api_endpoints = ["ReferendumV2"]
-            else:  # Discussion
-                api_endpoints = ["Discussion"]
-            
-            # Fetch data for all proposal IDs
-            all_proposal_data = []
-            
-            # Set required headers for Polkassembly API
-            headers = {
-                "x-network": "polkadot",
-                "Content-Type": "application/json"
-            }
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                for proposal_id in proposal_ids:
-                    endpoint = api_endpoints[0]  # Only one endpoint per type now
-                    api_url = f"https://polkadot.polkassembly.io/api/v2/{endpoint}/{proposal_id}"
-                    
-                    logger.info(f"Making GET request to: {api_url}")
-                    logger.info(f"Headers: {headers}")
-                    
-                    try:
-                        response = await client.get(api_url, headers=headers)
-                        logger.info(f"Response status: {response.status_code}")
-                        
-                        if response.status_code == 200:
-                            data = response.json()
-                            logger.info(f"Response data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-                            all_proposal_data.append({
-                                'id': proposal_id,
-                                'data': data,
-                                'type': proposal_type,
-                                'endpoint': endpoint
-                            })
-                            logger.info(f"Successfully fetched data for {proposal_type} {proposal_id}")
-                        else:
-                            logger.warning(f"API returned status {response.status_code} for {endpoint}/{proposal_id}")
-                            try:
-                                error_text = response.text
-                                logger.warning(f"Error response body: {error_text[:200]}")
-                            except:
-                                logger.warning("Could not read error response body")
-                            
-                            # Add error entry
-                            all_proposal_data.append({
-                                'id': proposal_id,
-                                'data': None,
-                                'type': proposal_type,
-                                'error': f"HTTP {response.status_code} from {api_url}"
-                            })
-                            
-                    except httpx.HTTPStatusError as e:
-                        logger.error(f"HTTP error {e.response.status_code} for {endpoint}/{proposal_id}")
-                        try:
-                            error_text = e.response.text
-                            logger.error(f"HTTP error response: {error_text[:200]}")
-                        except:
-                            logger.error("Could not read HTTP error response")
-                        
-                        # Add error entry
-                        all_proposal_data.append({
-                            'id': proposal_id,
-                            'data': None,
-                            'type': proposal_type,
-                            'error': f"HTTP error {e.response.status_code}"
-                        })
-                        
-                    except Exception as e:
-                        logger.error(f"Error fetching {endpoint}/{proposal_id}: {e}")
-                        # Add error entry
-                        all_proposal_data.append({
-                            'id': proposal_id,
-                            'data': None,
-                            'type': proposal_type,
-                            'error': f"Request failed: {str(e)}"
-                        })
-            
-            if not all_proposal_data or all(item.get('data') is None for item in all_proposal_data):
-                logger.error("No data fetched from API")
-                return self._fallback_to_static_response(query, user_id)
-            
-            # Process data with Gemini
-            return await self._process_dynamic_data_with_gemini(query, all_proposal_data, user_id)
-            
-        except Exception as e:
-            logger.error(f"Error in _handle_dynamic_query: {e}")
-            return self._fallback_to_static_response(query, user_id)
-    
-    async def _process_dynamic_data_with_gemini(self, query: str, proposal_data: list, user_id: str) -> Dict[str, Any]:
-        """
-        Process fetched proposal data using Gemini to generate natural language response
-        """
-        import json
-        
-        try:
-            # Create comprehensive prompt with all proposal data
-            data_context = ""
-            sources = []
-            successful_fetches = 0
-            
-            for item in proposal_data:
-                proposal_id = item['id']
-                data = item.get('data')
-                proposal_type = item['type']
-                endpoint = item.get('endpoint', 'unknown')
-                error = item.get('error')
-                
-                if data:
-                    # Format the data for context - FULL DATA, no truncation
-                    data_json = json.dumps(data, indent=2)
-                    data_context += f"\n\n=== {proposal_type} {proposal_id} ===\n{data_json}\n"
-                    successful_fetches += 1
-                    
-                    # Add source with correct endpoint
-                    sources.append({
-                        'title': f'{proposal_type} {proposal_id}',
-                        'url': f'https://polkadot.polkassembly.io/api/v2/{endpoint}/{proposal_id}',
-                        'source_type': 'polkassembly_api',
-                        'similarity_score': 1.0
-                    })
-                else:
-                    # Add error information to context
-                    data_context += f"\n\n=== ERROR for {proposal_type} {proposal_id} ===\n"
-                    data_context += f"Failed to fetch data: {error or 'Unknown error'}\n"
-            
-            # Create Gemini prompt
-            gemini_prompt = f"""
-You are a Polkadot governance expert. A user asked: "{query}"
 
-Here is the relevant proposal data from Polkassembly API:
-{data_context}
-
-Instructions:
-- Answer the user's question using the provided proposal data
-- Be specific and accurate, citing exact numbers, dates, and details from the data
-- If asked about votes, provide vote counts, percentages, and outcomes
-- If asked about proposal amounts, provide exact figures
-- If asked about descriptions, summarize the key points
-- Use natural, conversational language
-- If multiple proposals are mentioned, address each one clearly
-- Include relevant dates, statuses, and other important metadata
-- If some proposals had errors fetching data, mention this and provide what information is available
-
-Note: Successfully fetched data for {successful_fetches} out of {len(proposal_data)} requested proposals.
-
-Provide a comprehensive answer based on the data above.
-"""
-            
-
-            # Get response from Gemini
-            if self.gemini_client:
-                answer = self.gemini_client.get_response(gemini_prompt)
-                print(f"\n\n  gemini_prompt {gemini_prompt}\n\n")
-            else:
-                # Fallback to OpenAI if Gemini not available
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "You are a Polkadot governance expert."},
-                        {"role": "user", "content": gemini_prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=self.max_tokens
-                )
-                answer = response.choices[0].message.content
-            
-            # Handle memory
-            if self.memory_manager and self.memory_manager.enabled:
-                self.memory_manager.add_user_query(query, user_id)
-                self.memory_manager.add_assistant_response(answer, user_id)
-            
-            return {
-                'answer': answer,
-                'sources': sources,
-                'confidence': 0.95,
-                'context_used': True,
-                'model_used': 'gemini' if self.gemini_client else self.model,
-                'chunks_used': len(proposal_data),
-                'search_method': 'polkassembly_api',
-                'proposal_ids': [item['id'] for item in proposal_data],
-                'proposal_types': [item['type'] for item in proposal_data]
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing dynamic data with Gemini: {e}")
-            return self._fallback_to_static_response(query, user_id)
     
     def _fallback_to_static_response(self, query: str, user_id: str) -> Dict[str, Any]:
         """
@@ -600,10 +446,53 @@ Provide a comprehensive answer based on the data above.
             'error': 'Failed to fetch proposal data'
         }
 
+    def analyze_query_with_memory(self, query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> str:
+        """Analyze query with conversation history to add memory/context awareness"""
+        try:
+            # If no conversation history or Gemini client not available, return original query
+            if not conversation_history or not self.gemini_client:
+                return query
+            
+            # Create prompt for Gemini to analyze query with conversation history
+            analysis_prompt = f"""
+            You are analyzing a user query in the context of previous conversation to determine if the current query needs modification for better understanding.
+
+            Previous Conversation History: {conversation_history}
+            
+            Current User Query: {query}
+            
+            Instructions:
+            1. Analyze if the current query relates to or references anything from the previous conversation
+            2. If the query is a follow-up question that needs context from previous conversation, modify it to be more complete and standalone
+            3. If the query is independent and doesn't need previous context, keep it exactly the same
+            4. Only modify the query if it's clearly a follow-up that would be unclear without context
+            
+            Examples:
+            - If previous conversation was about "treasury proposals" and current query is "show me the recent ones", modify to "show me the recent treasury proposals"
+            - If previous conversation was about "Polkadot governance" and current query is "what about Kusama?", modify to "what about Kusama governance?"
+            - If current query is complete and standalone like "show me all referendums", keep it the same
+            
+            Return only the final query (either original or modified). Do not include any explanations or additional text.
+            """
+            
+            # Get analysis from Gemini
+            analyzed_query = self.gemini_client.get_response(analysis_prompt)
+            
+            # Clean up the response (remove any extra formatting)
+            analyzed_query = analyzed_query.strip().strip('"').strip("'")
+            
+            logger.info(f"Query analysis - Original: '{query}' -> Analyzed: '{analyzed_query}'")
+            return analyzed_query
+            
+        except Exception as e:
+            logger.error(f"Error in query analysis with memory: {e}")
+            # Return original query if analysis fails
+            return query
+
     def route_query(self, query):
         """
         Route query to appropriate data source using Gemini AI analysis.
-        Returns JSON with data_source, IDs, and proposal_type if applicable.
+        Returns either "STATIC" or "ONCHAIN".
         """
         import json
         
@@ -622,27 +511,27 @@ Data Sources:
    - Dashboard info (Frequency, People, Stellaswap)
    - Wiki pages, how-to guides
 
-2. DYNAMIC - For specific proposals with IDs like:
-   - "proposal ID 1679", "proposal 1622"
-   - "referenda 1622", "referendum 1622" 
-   - "discussion 1104"
-   - Any query mentioning specific proposal numbers
+2. ONCHAIN - 
+-Show me recent proposals
+-Find Kusama proposals
+-What treasury proposals exist?
+-Tell me about clarys proposal
+-Tell me about subsquare proposal
+-Give me the details of the proposal with id 123456
+-Give me some recent proposals
+-Give me proposals after 2024-01-01
+-Give me proposals before 2024-01-01
+-Give me proposals between dates
+-Count total proposals
+-Show me proposal amounts
 
 Instructions:
-- If query mentions specific numbers (proposal ID, referenda, discussions), use DYNAMIC
-- Extract any proposal IDs mentioned (look for numbers after "proposal", "referenda", "referendum", "discussion")
-- Determine proposal type:
-  * "Discussion" ONLY if explicitly mentions "discussion"
-  * "ReferendumV2" for all other cases (including "proposal ID", "proposal", "referenda", "referendum")
+- Onchain data contains blockchain onchain data. If user is asking about onchain data which is given in example above, use ONCHAIN
 - For general concepts/explanations without specific IDs, use STATIC
-
-IMPORTANT: If data_source is "dynamic", always include the ID numbers and set proposal_type to "ReferendumV2" unless it explicitly mentions "discussion".
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "data_source": "static" or "dynamic",
-  "ID": [list of numbers if found, empty array if none],
-  "proposal_type": "ReferendumV2" or "Discussion" or null
+  "data_source": "STATIC" or "ONCHAIN"
 }}
 """
 
@@ -654,71 +543,30 @@ Respond ONLY with valid JSON in this exact format:
                 # Try to parse JSON response
                 try:
                     result = json.loads(response.strip())
-                    
-                    # Post-process the result to handle missing IDs for dynamic queries
-                    if result.get('data_source') == 'dynamic':
-                        # If dynamic but no IDs found, try to extract them manually
-                        if not result.get('ID'):
-                            import re
-                            # Look for numbers in the query
-                            numbers = re.findall(r'\b\d+\b', query)
-                            if numbers:
-                                result['ID'] = [int(num) for num in numbers]
-                                logger.info(f"Manually extracted IDs: {result['ID']}")
-                        
-                        # If dynamic but no proposal type, default to ReferendumV2
-                        if not result.get('proposal_type'):
-                            # Only set to Discussion if explicitly mentioned
-                            if 'discussion' in query.lower():
-                                result['proposal_type'] = 'Discussion'
-                            else:
-                                result['proposal_type'] = 'ReferendumV2'
-                                logger.info(f"Defaulted proposal_type to ReferendumV2")
-                    
-                    return result
+                    return result.get('data_source', 'STATIC')
                     
                 except json.JSONDecodeError:
                     # If JSON parsing fails, extract from response text
-                    if "dynamic" in response.lower():
-                        # Try to extract numbers manually
-                        import re
-                        numbers = re.findall(r'\b\d+\b', query)
-                        proposal_type = 'Discussion' if 'discussion' in query.lower() else 'ReferendumV2'
-                        
-                        return {
-                            "data_source": "dynamic",
-                            "ID": [int(num) for num in numbers] if numbers else [],
-                            "proposal_type": proposal_type
-                        }
+                    if "onchain" in response.lower():
+                        return "ONCHAIN"
                     else:
-                        return {
-                            "data_source": "static",
-                            "ID": [],
-                            "proposal_type": None
-                        }
+                        return "STATIC"
             else:
                 # Fallback if no Gemini client
-                return {
-                    "data_source": "static",
-                    "ID": [],
-                    "proposal_type": None
-                }
+                return "STATIC"
                 
         except Exception as e:
             logger.error(f"Error in route_query: {e}")
             # Default fallback
-            return {
-                "data_source": "static",
-                "ID": [],
-                "proposal_type": None
-            }
+            return "STATIC"
         
 
     async def generate_answer(self, 
                        query: str, 
                        chunks: List[Dict[str, Any]], 
                        custom_prompt: Optional[str] = None,
-                       user_id: str = "default_user") -> Dict[str, Any]:
+                       user_id: str = "default_user",
+                       conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         Generate an answer based on the query and retrieved chunks, with web search fallback
 
@@ -758,7 +606,7 @@ Respond ONLY with valid JSON in this exact format:
             #     }
             
             
-
+            
             # Check if this is a greeting message
             if self._is_greeting_message(query):
                 logger.info("Detected greeting message, providing Polkassembly introduction")
@@ -780,12 +628,33 @@ Respond ONLY with valid JSON in this exact format:
             route_result = self.route_query(query)
             logger.info(f"Route result: {route_result}")
             
-            # Handle dynamic data source (specific proposal IDs)
-            if route_result.get('data_source') == 'dynamic' and route_result.get('ID'):
-                logger.info(f"Fetching dynamic data for IDs: {route_result['ID']}")
-                return await self._handle_dynamic_query(query, route_result, user_id)
+            # Handle dynamic data source (ONCHAIN queries)
+            if route_result == 'ONCHAIN':
+                try:
+                    # Use the ask_question function from query_api with conversation history
+                    sql_result = ask_question(query, conversation_history)
+                    
+                    # Format response to match expected structure
+                    return {
+                        'answer': sql_result.get('natural_response', 'No response available'),
+                        'sources': [],  # SQL queries don't have traditional sources
+                        'chunks_used': 0,
+                        'search_method': 'sql_query',
+                        'sql_query': sql_result.get('sql_queries', []),
+                        'result_count': sql_result.get('result_count', 0),
+                        'success': sql_result.get('success', False)
+                    }
+                except Exception as e:
+                    logger.error(f"Error in SQL query processing: {e}")
+                    # Fallback to static response if SQL query fails
+                    logger.info("Falling back to static data processing due to SQL error")
+                    # Continue to static processing below
             
             # Continue with static data processing (existing logic)
+            
+            # Analyze query with conversation history for memory/context awareness (STATIC queries only)
+            analyzed_query = self.analyze_query_with_memory(query, conversation_history)
+            logger.info(f"Using analyzed query for static processing: '{analyzed_query}...'")
             
             # Create context from chunks (increased length limit for large chunks)
             context = self.create_context_from_chunks(chunks, max_context_length=8000)
@@ -799,12 +668,7 @@ Respond ONLY with valid JSON in this exact format:
                 any(chunk.get('similarity_score', 0) > float(os.getenv("SIMILARITY_THRESHOLD")) for chunk in chunks)
             )
 
-            # print(f"similarity type is {type(os.getenv('SIMILARITY_THRESHOLD'))} and value if {float(os.getenv("SIMILARITY_THRESHOLD"))}")
 
-            # If no sufficient context and web search is enabled, use web search
-            # if not has_sufficient_context and self.enable_web_search:
-            #     logger.info("Insufficient local context, falling back to web search")
-            #     return await self.generate_answer_with_web_search(query)
             
             # If no sufficient context, diagnose the specific issue
             if not has_sufficient_context:
@@ -870,16 +734,16 @@ Respond ONLY with valid JSON in this exact format:
             # Get memory context if memory is enabled
             memory_context = ""
             if self.memory_manager and self.memory_manager.enabled:
-                memory_context = self.memory_manager.get_memory_context(query, user_id)
-                # Add user query to memory
-                self.memory_manager.add_user_query(query, user_id)
+                memory_context = self.memory_manager.get_memory_context(analyzed_query, user_id)
+                # Add analyzed query to memory
+                self.memory_manager.add_user_query(analyzed_query, user_id)
             
             # Create system prompt
             system_prompt = custom_prompt or self._get_default_system_prompt()
             
-            # Create user prompt with context, memory, and query
+            # Create user prompt with context, memory, and analyzed query
             print("context before going to openAI prompt", context)
-            user_prompt = self._create_user_prompt(query, context, memory_context)
+            user_prompt = self._create_user_prompt(analyzed_query, context, memory_context, conversation_history)
             
             # Generate response using selected AI service (exclusive)
             answer = None
@@ -901,7 +765,7 @@ Respond ONLY with valid JSON in this exact format:
                 )
                 answer = response.choices[0].message.content
                 logger.info("OpenAI response received successfully")
-                
+            
             elif gemini_enabled and self.gemini_client:
                 # Use Gemini exclusively  
                 logger.info("Using Gemini for response generation")
@@ -962,22 +826,31 @@ Respond ONLY with valid JSON in this exact format:
             return result
             
         except Exception as e:
-            logger.error(f"Error generating answer: {e}")
+            logger.error(f"Error processing query: {e}")
+            
+            # Send error notification to Slack
+            self.send_error_to_slack(query, str(e))
             
             # If local generation fails and web search is enabled, try web search as fallback
             if self.enable_web_search:
                 logger.info("Local generation failed, trying web search fallback")
-                return await self.generate_answer_with_web_search(query, user_id)
+                return await self.generate_answer_with_web_search(query, user_id, conversation_history)
             
+            # Return user-friendly error response
             return {
-                'answer': "I encountered an error while generating the answer. Please try again.",
+                'answer': "I'm having trouble processing your query. Please try again or rephrase your question in the next prompt.",
                 'sources': [],
                 'confidence': 0.0,
-                'follow_up_questions': self._get_fallback_follow_ups(query),
                 'context_used': False,
                 'model_used': self.model,
                 'chunks_used': 0,
-                'search_method': 'error'
+                'search_method': 'error_fallback',
+                'error': True,
+                'follow_up_questions': [
+                    "How does Polkadot's governance system work?",
+                    "What are the benefits of staking DOT tokens?", 
+                    "How do parachains connect to Polkadot?"
+                ]
             }
     
     def _get_default_system_prompt(self) -> str:
@@ -985,7 +858,9 @@ Respond ONLY with valid JSON in this exact format:
 
         return """You are a helpful AI assistant specialized in answering questions about Polkadot, the blockchain platform. 
 
-            You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
+If conversation history is provided, consider it when answering. If the current question is a follow-up to previous queries, provide relevant context from previous responses. If the current question is standalone, answer independently.
+
+You will be provided with context from Polkadot documentation and forum posts. Please follow these guidelines:
 
                 ✅ PROFESSIONAL FORMATTING REQUIREMENTS:
                 - ALWAYS add line breaks between numbered steps
@@ -1036,10 +911,14 @@ Respond ONLY with valid JSON in this exact format:
             "Never use https://example.com/image1.jpg or https://example.com/image2.jpg, in your output, if there is such, then remove it in the output"
             
             **Remember**: Answer as if you have direct expertise about Polkadot. Start directly with content, use proper line breaks between steps, and provide helpful, accurate, and **professionally formatted** information."""
-                
-    def _create_user_prompt(self, query: str, context: str, memory_context: str = "") -> str:
-        """Create the user prompt with query, context, and memory"""
+    
+    def _create_user_prompt(self, query: str, context: str, memory_context: str = "", conversation_history: Optional[List[Dict[str, Any]]] = None) -> str:
+        """Create the user prompt with query, context, memory, and conversation history"""
         prompt_parts = []
+        
+        # Add conversation history if available
+        if conversation_history:
+            prompt_parts.append(f"Conversation History: {conversation_history}")
         
         # Add memory context if available
         if memory_context:
@@ -1049,7 +928,7 @@ Respond ONLY with valid JSON in this exact format:
         if context:
             prompt_parts.append(f"Context Information:\n{context}")
         
-        prompt_parts.append(f"Question: {query}")
+        prompt_parts.append(f"Current Question: {query}")
         
         prompt_parts.append("Answer the question directly without mentioning the context, sources, documentation, or previous conversations. Do not start with phrases like \"Based on the provided context\", \"According to the documentation\", \"From the Polkadot Wiki\", \"From our previous conversation\", etc. Simply provide the answer as if you have direct knowledge of the topic.\n\nCRITICAL FORMATTING REQUIREMENTS:\n- NEVER start with headers (##, ###)\n- Start directly with answer content\n- ALWAYS add line breaks between numbered steps (1. step one [LINE BREAK] 2. step two [LINE BREAK])\n- ALWAYS add line breaks between bullet points\n- Use professional markdown formatting throughout\n- IMPORTANT: Include all images from the context using exact markdown format: ![Step Image](url)")
         
