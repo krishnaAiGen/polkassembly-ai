@@ -267,8 +267,8 @@ NaN VALUE HANDLING:
              - "Show me recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
             - "Find Kusama proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "source_network" = 'kusama' LIMIT 10;
             - "What treasury proposals exist?" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "source_proposal_type" ILIKE '%treasury%' LIMIT 10;
-            - "Tell me about clarys proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "content" ILIKE '%clarys%' OR "title" ILIKE '%clarys%' LIMIT 10;
-            - "Tell me about subsquare proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "content" ILIKE '%subsquare%' OR "title" ILIKE '%subsquare%' LIMIT 10;
+            - "Tell me about clarys proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "content" ILIKE '%clarys%' OR "title" ILIKE '%clarys%' LIMIT 10;
+            - "Tell me about subsquare proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "content" ILIKE '%subsquare%' OR "title" ILIKE '%subsquare%' LIMIT 10;
             - "Give me the details of the proposal with id 123456" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "index" = 123456 LIMIT 10;
             - "Give me some recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
             - "Give me proposals after 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "createdat" > '2024-01-01' LIMIT 10;
@@ -398,15 +398,16 @@ NaN VALUE HANDLING:
                 
                 # Add sample data from this query
                 if results:
-                    # Trim long text fields
+                    # Pass full data to AI model - let the AI decide how to summarize if needed
                     sample_results = results[:5]  # First 5 results
                     trimmed_results = []
                     
                     for result in sample_results:
                         trimmed_result = {}
                         for key, value in result.items():
-                            if isinstance(value, str) and len(value) > 100:
-                                trimmed_result[key] = value[:100] + "..."
+                            # Only trim extremely long fields (over 2000 characters) to prevent token issues
+                            if isinstance(value, str) and len(value) > 2000:
+                                trimmed_result[key] = value[:2000] + "... [truncated]"
                             else:
                                 trimmed_result[key] = value
                         trimmed_results.append(trimmed_result)
@@ -414,12 +415,12 @@ NaN VALUE HANDLING:
                     # Add structured info
                     for j, result in enumerate(trimmed_results):
                         item_info = []
+                        # Include ALL fields from SQL results - no filtering whatsoever
                         for key, value in result.items():
-                            if value is not None and str(value) != 'None':
-                                if 'count' in key.lower() or 'total' in key.lower():
-                                    item_info.append(f"{key}: {value}")
-                                elif key in ['title', 'index', 'onchaininfo_status', 'createdat', 'onchaininfo_proposer']:
-                                    item_info.append(f"{key}: {value}")
+                            if value is not None and str(value) != 'None' and str(value).strip():
+                                # Just clean up the key name for readability but include ALL fields
+                                formatted_key = key.replace('_', ' ').title()
+                                item_info.append(f"{formatted_key}: {value}")
                         
                         if item_info:
                             combined_summary += f"  Result {j+1}: " + ", ".join(item_info) + "\n"
@@ -499,20 +500,14 @@ NaN VALUE HANDLING:
             # Limit results for OpenAI context (show first 5 rows max)
             sample_results = results[:10]
             
-            # Trim long text fields to prevent token overflow
+            # Pass full data to AI model - let the AI decide how to summarize if needed
             trimmed_results = []
             for result in sample_results:
                 trimmed_result = {}
                 for key, value in result.items():
-                    if isinstance(value, str) and len(value) > 200:
-                        # Trim very long text fields
-                        trimmed_result[key] = value[:200] + "..."
-                    elif key.lower() in ['content', 'description', 'title']:
-                        # Specifically trim content fields
-                        if isinstance(value, str) and len(value) > 100:
-                            trimmed_result[key] = value[:100] + "..."
-                        else:
-                            trimmed_result[key] = value
+                    # Only trim extremely long fields (over 2000 characters) to prevent token issues
+                    if isinstance(value, str) and len(value) > 2000:
+                        trimmed_result[key] = value[:2000] + "... [truncated]"
                     else:
                         trimmed_result[key] = value
                 trimmed_results.append(trimmed_result)
@@ -538,28 +533,12 @@ NaN VALUE HANDLING:
                 for i, result in enumerate(trimmed_results[:10]):  # Show up to 10 examples
                     item_info = []
                     
-                    # Handle different types of data
-                    if 'title' in result and result['title']:
-                        item_info.append(f"Title: {result['title']}")
-                    if 'index' in result and result['index']:
-                        item_info.append(f"ID: {result['index']}")
-                    if 'onchaininfo_status' in result and result['onchaininfo_status']:
-                        item_info.append(f"Status: {result['onchaininfo_status']}")
-                    if 'createdat' in result and result['createdat']:
-                        item_info.append(f"Date: {result['createdat']}")
-                    if 'onchaininfo_beneficiaries_0_amount' in result and result['onchaininfo_beneficiaries_0_amount']:
-                        item_info.append(f"Amount: {result['onchaininfo_beneficiaries_0_amount']}")
-                    
-                    # Handle proposer addresses specifically
-                    if 'onchaininfo_proposer' in result:
-                        proposer = result['onchaininfo_proposer']
-                        if proposer and proposer != 'None':
-                            item_info.append(f"Proposer: {proposer}")
-                    
-                    # Handle other address fields
+                    # Include ALL fields from SQL results - no filtering whatsoever
                     for key, value in result.items():
-                        if 'address' in key.lower() and value and value != 'None':
-                            item_info.append(f"{key}: {value}")
+                        if value is not None and str(value) != 'None' and str(value).strip():
+                            # Just clean up the key name for readability but include ALL fields
+                            formatted_key = key.replace('_', ' ').title()
+                            item_info.append(f"{formatted_key}: {value}")
                     
                     if item_info:
                         summary_items.append(f"#{i+1}: " + ", ".join(item_info))
@@ -590,6 +569,7 @@ NaN VALUE HANDLING:
             3. DETAIL QUERIES: Include all relevant information like titles, IDs, status, dates, amounts
             4. ADDRESS QUERIES: Show actual blockchain addresses - these are public on-chain data
             5. AMOUNT QUERIES: Display exact values requested in proposals
+            6. 20-300 is the idead word ouput count. If the ouput will be too long than that, provide in summarization form instead of listing all the data.
             
             DATA PRESENTATION:
             - Use conversational language about Polkadot/Kusama governance
