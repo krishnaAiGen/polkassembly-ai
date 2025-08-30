@@ -254,12 +254,9 @@ NaN VALUE HANDLING:
             - Return queries as a JSON array: ["query1", "query2"]
             
             COLUMN SELECTION STRATEGY:
-            - For general queries: SELECT key columns like "title", "index", "onchaininfo_status", "createdat", "source_network"
-            - For specific proposal details: Include "content" only when explicitly asked for details/content
-            - For searches: Focus on "title", "index", "onchaininfo_status", "createdat" 
-            - Avoid SELECT * unless specifically needed - it causes long responses
-            - Use SELECT "title", "index", "onchaininfo_status", "createdat" for most queries
-            - If you searching for index keep LIMIT upto 10 as there can be multi proposals with same index
+            - For general queries: SELECT key columns like "title", "index", "onchaininfo_status", "createdat", "source_network", "content"
+            - For searches: Focus on "title", "index", "onchaininfo_status", "createdat" , "content"
+            - Avoid SELECT * unless specifically needed - it causes long responses. Only use when somebody asks fro more info on proposals, referenda ID.
             - But, if somebody ask, proposals in voting then also use other attributes such as DecisionDepositPlaced, Submitted, ConfirmStarted, ConfirmAborted along with Deciding.
             
             EXAMPLE QUERIES:
@@ -270,10 +267,10 @@ NaN VALUE HANDLING:
             - "Tell me about clarys proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "content" ILIKE '%clarys%' OR "title" ILIKE '%clarys%' LIMIT 10;
             - "Tell me about subsquare proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "content" ILIKE '%subsquare%' OR "title" ILIKE '%subsquare%' LIMIT 10;
             - "Give me the details of the proposal with id 123456" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "index" = 123456 LIMIT 10;
-            - "Give me some recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
-            - "Give me proposals after 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "createdat" > '2024-01-01' LIMIT 10;
-            - "Give me proposals before 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "createdat" < '2024-01-01' LIMIT 10;
-            - "Give me proposals between dates" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "createdat" BETWEEN '2024-01-01' AND '2024-01-02' LIMIT 10;
+            - "Give me some recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
+            - "Give me proposals after 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "createdat" > '2024-01-01' LIMIT 10;
+            - "Give me proposals before 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat" , "content" FROM {self.table_name} WHERE "createdat" < '2024-01-01' LIMIT 10;
+            - "Give me proposals between dates" -> SELECT "title", "index", "onchaininfo_status", "createdat" , "content" FROM {self.table_name} WHERE "createdat" BETWEEN '2024-01-01' AND '2024-01-02' LIMIT 10;
             - "Count total proposals" -> SELECT COUNT(*) as total_proposals FROM {self.table_name};
             - "Show me proposal amounts" -> SELECT "title", "index", "onchaininfo_beneficiaries_0_amount", "createdat" FROM {self.table_name} WHERE "onchaininfo_beneficiaries_0_amount" IS NOT NULL LIMIT 10;
             
