@@ -1,19 +1,20 @@
 """
 Simple API wrapper for the Query2SQL system
 """
-
-try:
-    # Try relative import first (when imported as module)
-    from .query2sql import Query2SQL
-except ImportError:
-    # Fall back to direct import (when run as script)
-    from query2sql import Query2SQL
-
 import json
 import sys
 import os
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+
+try:
+    # Try relative import first (when imported as module)
+    from .query2sql import Query2SQL
+except ImportError:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, current_dir)
+    from query2sql import Query2SQL
+
 
 # Add SlackBot for error notifications
 try:
