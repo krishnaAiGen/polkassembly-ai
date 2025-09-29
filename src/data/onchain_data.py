@@ -164,15 +164,15 @@ class PolkassemblyDataFetcher:
             logger.error(f"Error fetching votes: {e}")
             return {}
 
-    def fetch_all_votes(self, max_items: int = None) -> List[Dict]:
+    def fetch_all_votes(self, max_items: int = 1000) -> List[Dict]:
         """Fetch all votes with pagination"""
         all_votes = []
         page = 1
-        limit = 50
+        limit = 100
 
         logger.info(f"Fetching votes for {self.network}...")
         
-        while True:
+        while len(all_votes) < max_items:
             response_data = self.fetch_votes(page=page, limit=limit)
             
             if not response_data or 'items' not in response_data:
@@ -183,26 +183,16 @@ class PolkassemblyDataFetcher:
                 break
 
             total_count = response_data.get('totalCount', 0)
-            if total_count and max_items is None:
+            if total_count:
                 max_items = total_count
                 
             all_votes.extend(votes)
-            
-            # Check if we've reached the maximum items or no more data
-            if max_items and len(all_votes) >= max_items:
-                all_votes = all_votes[:max_items]
-                break
-                
-            # Check if we've fetched all available data
-            if len(votes) < limit:
-                break
-                
             page += 1
-            time.sleep(0.1)  # Rate limiting
+            time.sleep(0.2)  # Rate limiting
             
             logger.info(f"Fetched {len(all_votes)} votes so far...")
 
-        return all_votes
+        return all_votes[:max_items]
 
     def fetch_and_save_all_data(self, max_items_per_type: int = 1000):
         """Fetch all data types and save to files"""
@@ -242,7 +232,7 @@ class PolkassemblyDataFetcher:
                 logger.error(f"Error processing {proposal_type.value}: {e}")
                 continue
 
-def fetch_votes_data(network: str = "polkadot", data_dir: str = None, max_items: int = None):
+def fetch_votes_data(network: str = "polkadot", data_dir: str = None, max_items: int = 1000):
     """Main function to fetch votes data for a specific network"""
     # Use the specified directory path
     if not data_dir:
@@ -299,7 +289,7 @@ def fetch_onchain_data(max_items_per_type: int = 1000, data_dir: str = None):
 
 if __name__ == "__main__":
     # Example: Fetch votes data for polkadot
-    # fetch_votes_data(network="polkadot", max_items=None) 
+    fetch_votes_data(network="polkadot", max_items=1000) 
     
     # Fetch data for all networks and proposal types
-    fetch_onchain_data(max_items_per_type=10)  # Adjust as needed
+    # fetch_onchain_data(max_items_per_type=10)  # Adjust as needed
