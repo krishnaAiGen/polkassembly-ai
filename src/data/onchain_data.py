@@ -165,10 +165,11 @@ class PolkassemblyDataFetcher:
             return {}
 
     def fetch_all_votes(self, max_items: int = 1000) -> List[Dict]:
-        """Fetch all votes with pagination"""
+        """Fetch all votes with simple batch saving"""
         all_votes = []
         page = 1
         limit = 100
+        batch_count = 0
 
         logger.info(f"Fetching votes for {self.network}...")
         
@@ -191,8 +192,30 @@ class PolkassemblyDataFetcher:
             time.sleep(0.2)  # Rate limiting
             
             logger.info(f"Fetched {len(all_votes)} votes so far...")
+            
+            # Save when we reach 1000 votes
+            if len(all_votes) >= 1000:
+                batch_count += 1
+                batch_votes = all_votes[:1000]
+                
+                # Save this batch
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{self.network}_votes_batch_{batch_count}_{timestamp}.json"
+                self.save_to_file(batch_votes, filename)
+                logger.info(f"Saved batch {batch_count} with 1000 votes to {filename}")
+                
+                # Remove saved votes and continue
+                all_votes = all_votes[1000:]
 
-        return all_votes[:max_items]
+        # Save any remaining votes
+        if all_votes:
+            batch_count += 1
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{self.network}_votes_batch_{batch_count}_{timestamp}.json"
+            self.save_to_file(all_votes, filename)
+            logger.info(f"Saved final batch {batch_count} with {len(all_votes)} votes to {filename}")
+
+        return []
 
     def fetch_and_save_all_data(self, max_items_per_type: int = 1000):
         """Fetch all data types and save to files"""
@@ -247,17 +270,10 @@ def fetch_votes_data(network: str = "polkadot", data_dir: str = None, max_items:
         # Initialize fetcher with specified data directory
         fetcher = PolkassemblyDataFetcher(network=network, data_dir=data_dir)
         
-        # Fetch all votes
-        votes_data = fetcher.fetch_all_votes(max_items=max_items)
+        # Fetch all votes (saves automatically in batches of 1000)
+        fetcher.fetch_all_votes(max_items=max_items)
         
-        if votes_data:
-            # Save votes data
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{network}_votes_{timestamp}.json"
-            fetcher.save_to_file(votes_data, filename)
-            logger.info(f"Completed votes fetch for {network}. Total votes: {len(votes_data)}")
-        else:
-            logger.warning(f"No votes data fetched for {network}")
+        logger.info(f"Completed votes fetch for {network}")
             
     except Exception as e:
         logger.error(f"Error processing votes for network {network}: {e}")
@@ -289,7 +305,7 @@ def fetch_onchain_data(max_items_per_type: int = 1000, data_dir: str = None):
 
 if __name__ == "__main__":
     # Example: Fetch votes data for polkadot
-    fetch_votes_data(network="polkadot", max_items=1000) 
+    fetch_votes_data(network="polkadot", max_items=5000) 
     
     # Fetch data for all networks and proposal types
     # fetch_onchain_data(max_items_per_type=10)  # Adjust as needed
