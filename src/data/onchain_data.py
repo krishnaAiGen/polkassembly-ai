@@ -147,6 +147,76 @@ class PolkassemblyDataFetcher:
         
         logger.info(f"Saved {len(data)} items to {filepath}")
 
+    def fetch_votes(self, page: int = 1, limit: int = 50) -> Dict[str, Any]:
+        """Fetch votes from Polkassembly API"""
+        url = f"{self.base_url}/votes/all"
+        
+        params = {
+            'page': page,
+            'limit': limit
+        }
+
+        try:
+            response = requests.get(url, params=params, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching votes: {e}")
+            return {}
+
+    def fetch_all_votes(self, max_items: int = 1000) -> List[Dict]:
+        """Fetch all votes with simple batch saving"""
+        all_votes = []
+        page = 1
+        limit = 100
+        batch_count = 0
+
+        logger.info(f"Fetching votes for {self.network}...")
+        
+        while len(all_votes) < max_items:
+            response_data = self.fetch_votes(page=page, limit=limit)
+            
+            if not response_data or 'items' not in response_data:
+                break
+                
+            votes = response_data['items']
+            if not votes:
+                break
+
+            total_count = response_data.get('totalCount', 0)
+            if total_count:
+                max_items = total_count
+                
+            all_votes.extend(votes)
+            page += 1
+            time.sleep(0.2)  # Rate limiting
+            
+            logger.info(f"Fetched {len(all_votes)} votes so far...")
+            
+            # Save when we reach 1000 votes
+            if len(all_votes) >= 1000:
+                batch_count += 1
+                batch_votes = all_votes[:1000]
+                
+                # Save this batch
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{self.network}_votes_batch_{batch_count}_{timestamp}.json"
+                self.save_to_file(batch_votes, filename)
+                logger.info(f"Saved batch {batch_count} with 1000 votes to {filename}")
+                
+                # Remove saved votes and continue
+                all_votes = all_votes[1000:]
+
+        # Save any remaining votes
+        if all_votes:
+            batch_count += 1
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{self.network}_votes_batch_{batch_count}_{timestamp}.json"
+            self.save_to_file(all_votes, filename)
+            logger.info(f"Saved final batch {batch_count} with {len(all_votes)} votes to {filename}")
+
+        return []
+
     def fetch_and_save_all_data(self, max_items_per_type: int = 1000):
         """Fetch all data types and save to files"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -185,6 +255,29 @@ class PolkassemblyDataFetcher:
                 logger.error(f"Error processing {proposal_type.value}: {e}")
                 continue
 
+def fetch_votes_data(network: str = "polkadot", data_dir: str = None, max_items: int = 1000):
+    """Main function to fetch votes data for a specific network"""
+    # Use the specified directory path
+    if not data_dir:
+        script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        data_dir = os.path.join(script_dir, "data", "onchain_data")
+    
+    logger.info(f"Storing votes data in: {data_dir}")
+    
+    try:
+        logger.info(f"Starting votes fetch for {network}...")
+        
+        # Initialize fetcher with specified data directory
+        fetcher = PolkassemblyDataFetcher(network=network, data_dir=data_dir)
+        
+        # Fetch all votes (saves automatically in batches of 1000)
+        fetcher.fetch_all_votes(max_items=max_items)
+        
+        logger.info(f"Completed votes fetch for {network}")
+            
+    except Exception as e:
+        logger.error(f"Error processing votes for network {network}: {e}")
+
 def fetch_onchain_data(max_items_per_type: int = 1000, data_dir: str = None):
     """Main function to fetch onchain data for all supported networks"""
     # Use the specified directory path
@@ -211,5 +304,8 @@ def fetch_onchain_data(max_items_per_type: int = 1000, data_dir: str = None):
             continue
 
 if __name__ == "__main__":
+    # Example: Fetch votes data for polkadot
+    fetch_votes_data(network="polkadot", max_items=5000) 
+    
     # Fetch data for all networks and proposal types
-    fetch_onchain_data(max_items_per_type=10)  # Adjust as needed
+    # fetch_onchain_data(max_items_per_type=10)  # Adjust as needed
