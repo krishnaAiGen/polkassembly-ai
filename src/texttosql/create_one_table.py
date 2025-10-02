@@ -164,6 +164,21 @@ class CSVCombiner:
         logger.info("Concatenating all DataFrames...")
         combined_df = pd.concat(combined_dfs, ignore_index=True, sort=False)
         
+        logger.info("Creating row_index column...")
+        # Per user request, create a row_index from specific columns with an underscore separator.
+        # Using corrected column names for robustness: source_network and onchaininfo_hash.
+        cols_to_concat = ['source_network', 'source_proposal_type', 'index', 'onchaininfo_hash']
+        separator = "_"
+
+        # Ensure required columns exist to avoid errors
+        for col in cols_to_concat:
+            if col not in combined_df.columns:
+                logger.warning(f"'{col}' column not found for row_index generation. It will be treated as empty.")
+                combined_df[col] = ''
+
+        # Create the new column by joining the specified columns with the separator
+        combined_df["row_index"] = combined_df[cols_to_concat].astype(str).agg(separator.join, axis=1)
+        
         logger.info(f"Combined DataFrame created: {len(combined_df)} rows, {len(combined_df.columns)} columns")
         return combined_df
     

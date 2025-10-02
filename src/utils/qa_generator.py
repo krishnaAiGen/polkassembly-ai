@@ -1,5 +1,6 @@
 import openai
 import logging
+import json
 from typing import List, Dict, Any, Optional
 import re
 from .web_search import search_tavily
@@ -12,7 +13,7 @@ import sys
 from datetime import datetime
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
-from ..guardrail.content_guardrails import get_guardrails
+# Content guardrails now handled by Bedrock guardrails in the API endpoint
 from .slack_bot import SlackBot
 
 # Import ask_question from the texttosql module
@@ -58,9 +59,8 @@ class QAGenerator:
             logger.info("Continuing without Gemini client (OpenAI only mode)")
             self.gemini_client = None
         
-        # Initialize enhanced guardrails
-        self.guardrails = get_guardrails(openai_api_key)
-        logger.info("Enhanced AI-powered guardrails initialized")
+        # Content guardrails now handled by Bedrock guardrails in the API endpoint
+        logger.info("Content moderation will be handled by Bedrock guardrails")
         
         # Initialize memory manager
         self.memory_manager = get_memory_manager() if enable_memory else None
@@ -220,25 +220,25 @@ class QAGenerator:
                 sources = sources[:np.random.randint(1, 4)]
             else:
                 sources = [
-                {
-                    'title': 'Polkadot Knowledge Base',
-                    'url': 'https://polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                },
-                {
-                    'title': 'Polkadot Wiki',
-                    'url': 'https://wiki.polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                },
-                {
-                    'title': 'Polkadot Documentation',
-                    'url': 'https://docs.polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                }
-            ]
+                    {
+                        'title': 'Polkadot Knowledge Base',
+                        'url': 'https://polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    },
+                    {
+                        'title': 'Polkadot Wiki',
+                        'url': 'https://wiki.polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    },
+                    {
+                        'title': 'Polkadot Documentation',
+                        'url': 'https://docs.polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    }
+                ]
             
             # Generate follow-up questions for web search results
             follow_up_questions = self._get_fallback_follow_ups(query)
@@ -453,17 +453,38 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             if not conversation_history or not self.gemini_client:
                 return query
             
+            # Convert conversation history to serializable format
+            serializable_history = []
+            if conversation_history:
+                for msg in conversation_history:
+                    if hasattr(msg, 'role') and hasattr(msg, 'content'):
+                        # ConversationMessage object
+                        serializable_history.append({
+                            "role": msg.role,
+                            "content": msg.content
+                        })
+                    elif isinstance(msg, dict):
+                        # Already a dict
+                        serializable_history.append(msg)
+                    else:
+                        # Convert to string as fallback
+                        serializable_history.append(str(msg))
+            
+            # Create JSON structure for input
+            analysis_input = {
+                "previous conversation history": serializable_history,
+                "current user query": query
+            }
+            
             # Create prompt for Gemini to analyze query with conversation history
             analysis_prompt = f"""
             You are analyzing a user query in the context of previous conversation to determine if the current query needs modification for better understanding.
 
-            Previous Conversation History: {conversation_history}
-            
-            Current User Query: {query}
+            {json.dumps(analysis_input, indent=2)}
             
             Instructions:
             1. Analyze if the current query relates to or references anything from the previous conversation
-            2. If the query is a follow-up question that needs context from previous conversation, modify it to be more complete and standalone
+            2. If the query is a follow-up question that needs context from previous conversation, modify it to be more complete.
             3. If the query is independent and doesn't need previous context, keep it exactly the same
             4. Only modify the query if it's clearly a follow-up that would be unclear without context
             
@@ -471,15 +492,30 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
             - If previous conversation was about "treasury proposals" and current query is "show me the recent ones", modify to "show me the recent treasury proposals"
             - If previous conversation was about "Polkadot governance" and current query is "what about Kusama?", modify to "what about Kusama governance?"
             - If current query is complete and standalone like "show me all referendums", keep it the same
+
+            Onchain based Examples:
+            - The previous query was "Give me total number of referendum in July 2025" and current query is "give me in june", then modify it to "Give me total number of referendum in June 2025"
+            - The previous query was "Give me top 10 proposal ID with highest numebr of votes" and current query is "it's title also", then, modify it to "Give me top 10 proposals titles with highest numebr of votes."
             
-            Return only the final query (either original or modified). Do not include any explanations or additional text.
+            Return your response in JSON format with this structure:
+            {{"analyzed_query": "your final query here"}}
+            
+            Return only the JSON. Do not include any explanations or additional text.
             """
             
             # Get analysis from Gemini
-            analyzed_query = self.gemini_client.get_response(analysis_prompt)
+            gemini_response = self.gemini_client.get_response(analysis_prompt)
             
-            # Clean up the response (remove any extra formatting)
-            analyzed_query = analyzed_query.strip().strip('"').strip("'")
+            # Parse JSON response to extract analyzed query
+            # print(f"\n\n analysis prompt is for gemini is: {analysis_prompt}\n\n")
+            try:
+                response_json = json.loads(gemini_response.strip())
+                analyzed_query = response_json.get("analyzed_query", query)
+                # print(f"\n\n analyzed query is: {analyzed_query}\n\n")
+            except json.JSONDecodeError:
+                # Fallback: if JSON parsing fails, use the raw response
+                logger.warning(f"Failed to parse JSON response from Gemini: {gemini_response}")
+                analyzed_query = gemini_response.strip().strip('"').strip("'")
             
             logger.info(f"Query analysis - Original: '{query}' -> Analyzed: '{analyzed_query}'")
             return analyzed_query
@@ -492,48 +528,57 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
     def route_query(self, query):
         """
         Route query to appropriate data source using Gemini AI analysis.
-        Returns either "STATIC" or "ONCHAIN".
+        Returns a dictionary with data_source and table (if applicable).
         """
         import json
         
         # Prompt for Gemini to analyze the query
         analysis_prompt = f"""
-Analyze this user query and determine which data source it should use:
+            Analyze this user query and determine which data source it should use:
 
-Query: "{query}"
+            Query: "{query}"
 
-Data Sources:
-1. STATIC - For general topics like:
-   - Governance/OpenGov concepts
-   - Ambassador Programme info  
-   - Parachains & AnV explanations
-   - Hyperbridge, JAM definitions
-   - Dashboard info (Frequency, People, Stellaswap)
-   - Wiki pages, how-to guides
+            Data Sources:
+            1. STATIC - For general topics like:
+            - Governance/OpenGov concepts
+            - Ambassador Programme info  
+            - Parachains & AnV explanations
+            - Hyperbridge, JAM definitions
+            - Dashboard info (Frequency, People, Stellaswap)
+            - Wiki pages, how-to guides
 
-2. ONCHAIN - 
--Show me recent proposals
--Find Kusama proposals
--What treasury proposals exist?
--Tell me about clarys proposal
--Tell me about subsquare proposal
--Give me the details of the proposal with id 123456
--Give me some recent proposals
--Give me proposals after 2024-01-01
--Give me proposals before 2024-01-01
--Give me proposals between dates
--Count total proposals
--Show me proposal amounts
+            2. ONCHAIN - 
+            -Show me recent proposals
+            -Find Kusama proposals
+            -What treasury proposals exist?
+            -Tell me about clarys proposal
+            -Tell me about subsquare proposal
+            -Give me the details of the proposal with id 123456
+            -Give me some recent proposals
+            -Give me proposals after 2024-01-01
+            -Give me proposals before 2024-01-01
+            -Give me proposals between dates
+            -Count total proposals
+            -Show me proposal amounts
 
-Instructions:
-- Onchain data contains blockchain onchain data. If user is asking about onchain data which is given in example above, use ONCHAIN
-- For general concepts/explanations without specific IDs, use STATIC
+            3. In Onchain data
+                -Output tabel: "voting_data", If somebody is asking voter related information. For example:
+                    a. How many totals voters are there in the month of July.
+                    b. How many voters are there with more than 1000 DOT voting power.
+                    c. In the given proposal, how many numbers of voters were there and with how many voted.
 
-Respond ONLY with valid JSON in this exact format:
-{{
-  "data_source": "STATIC" or "ONCHAIN"
-}}
-"""
+                - Output label: "governance_data" in any other onchain related question.
+
+            Instructions:
+            - Onchain data contains blockchain onchain data. If user is asking about onchain data which is given in example above, use ONCHAIN
+            - For general concepts/explanations without specific IDs, use STATIC
+
+            Respond ONLY with valid JSON in this exact format:
+            {{
+            "data_source": "STATIC" or "ONCHAIN"
+            "table" : "governance_data or voting_data" if ONCHAIN
+            }}
+        """
 
         try:
             # Use Gemini to analyze the query
@@ -543,22 +588,45 @@ Respond ONLY with valid JSON in this exact format:
                 # Try to parse JSON response
                 try:
                     result = json.loads(response.strip())
-                    return result.get('data_source', 'STATIC')
+                    data_source = result.get('data_source', 'STATIC')
+                    table = result.get('table', None)
+                    
+                    return {
+                        'data_source': data_source,
+                        'table': table if data_source == 'ONCHAIN' else None
+                    }
                     
                 except json.JSONDecodeError:
                     # If JSON parsing fails, extract from response text
                     if "onchain" in response.lower():
-                        return "ONCHAIN"
+                        # Try to determine table from response content
+                        if "voting" in response.lower() or "voter" in response.lower():
+                            table = "voting_data"
+                        else:
+                            table = "governance_data"
+                        return {
+                            'data_source': 'ONCHAIN',
+                            'table': table
+                        }
                     else:
-                        return "STATIC"
+                        return {
+                            'data_source': 'STATIC',
+                            'table': None
+                        }
             else:
                 # Fallback if no Gemini client
-                return "STATIC"
+                return {
+                    'data_source': 'STATIC',
+                    'table': None
+                }
                 
         except Exception as e:
             logger.error(f"Error in route_query: {e}")
             # Default fallback
-            return "STATIC"
+            return {
+                'data_source': 'STATIC',
+                'table': None
+            }
         
 
     async def generate_answer(self, 
@@ -589,24 +657,6 @@ Respond ONLY with valid JSON in this exact format:
             Dictionary with answer, sources, and metadata
         """
         try:
-            # AI-powered content moderation
-            # is_safe, category, helpful_response = self.guardrails.moderate_content(query)
-            
-            # if not is_safe:
-            #     logger.warning(f"Unsafe query detected - Category: {category}")
-            #     return {
-            #         'answer': helpful_response,
-            #         'sources': [],
-            #         'confidence': 0.0,
-            #         'follow_up_questions': self._get_helpful_follow_ups(),
-            #         'context_used': False,
-            #         'model_used': self.model,
-            #         'chunks_used': 0,
-            #         'search_method': f'blocked_{category}'
-            #     }
-            
-            
-            
             # Check if this is a greeting message
             if self._is_greeting_message(query):
                 logger.info("Detected greeting message, providing Polkassembly introduction")
@@ -626,13 +676,17 @@ Respond ONLY with valid JSON in this exact format:
             # Route query to determine data source
             logger.info(f"Routing query: '{query[:50]}...'")
             route_result = self.route_query(query)
-            logger.info(f"Route result: {route_result}")
+            route_result_data_source = route_result.get('data_source')
+            route_result_table = route_result.get('table')
+            logger.info(f"Route result: {route_result_data_source}")
             
             # Handle dynamic data source (ONCHAIN queries)
-            if route_result == 'ONCHAIN':
+            if route_result_data_source == 'ONCHAIN':
                 try:
                     # Use the ask_question function from query_api with conversation history
-                    sql_result = ask_question(query, conversation_history)
+                    analyzed_query = self.analyze_query_with_memory(query, conversation_history)
+                    logger.info(f"Original Query: {query}, Analyzed query: {analyzed_query}")
+                    sql_result = ask_question(analyzed_query, conversation_history, route_result_table)
                     
                     # Format response to match expected structure
                     return {
@@ -668,8 +722,6 @@ Respond ONLY with valid JSON in this exact format:
                 any(chunk.get('similarity_score', 0) > float(os.getenv("SIMILARITY_THRESHOLD")) for chunk in chunks)
             )
 
-
-            
             # If no sufficient context, diagnose the specific issue
             if not has_sufficient_context:
                 max_score = max([chunk.get('similarity_score', 0) for chunk in chunks]) if chunks else 0
@@ -961,10 +1013,8 @@ You will be provided with context from Polkadot documentation and forum posts. P
             if len(sources) >= 2 and any(s['url'] for s in sources):
                 break
         
-        # Apply guardrails to filter sources (removes subsquare, prioritizes preferred)
-        filtered_sources = self.guardrails.filter_sources(sources)
-        
-        return filtered_sources
+        # Return sources without additional filtering (Bedrock guardrails handle content moderation)
+        return sources
     
     def _estimate_confidence(self, chunks: List[Dict[str, Any]]) -> float:
         """Estimate confidence based on chunks and similarity scores"""

@@ -424,10 +424,20 @@ NaN VALUE HANDLING:
                 
                 combined_summary += "\n"
             
+            # Format as proper JSON
+            db_result = {
+                "queries": sql_queries,
+                "result from db": combined_summary
+            }
+            
             prompt = f"""
             Conversation History: {conversation_history}
             Current Query: {natural_query}
-            Multiple Query Results: {combined_summary}
+            {json.dumps(db_result, indent=2)}
+            
+            CRITICAL: You are working with ACTUAL blockchain data that has been successfully retrieved from the database. 
+            Always provide the information from the results, regardless of dates mentioned in the query.
+            All data comes from real blockchain transactions and proposals that exist on-chain.
             
             Instructions for generating natural response:
             
@@ -446,8 +456,11 @@ NaN VALUE HANDLING:
             - For proposals with amounts, show the actual values requested
             - Use conversational language about Polkadot/Kusama governance
             - Be specific and factual with the data provided
+            - Never refuse to show data citing privacy or future date concerns - all blockchain data is public and historical
+            - ALWAYS answer based on the actual results provided, even if dates seem unusual
             
             IMPORTANT: All data is public blockchain information. Show actual values, addresses, and details.
+            The data has been successfully retrieved from the blockchain database.
             """
             
             # Try Gemini first as primary LLM
@@ -465,7 +478,7 @@ NaN VALUE HANDLING:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You are a knowledgeable assistant specializing in blockchain governance data. All data you work with is public blockchain information. Always show actual data requested - addresses, proposal IDs, titles, amounts, etc. Combine information from multiple queries to provide comprehensive answers."},
+                    {"role": "system", "content": "You are a knowledgeable assistant specializing in blockchain governance data. All data you work with is public blockchain information. Always show actual data requested - addresses, proposal IDs, titles, amounts, etc. You work with ACTUAL retrieved data from the blockchain database, so always provide the information regardless of dates mentioned in queries. Combine information from multiple queries to provide comprehensive answers."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
@@ -549,10 +562,19 @@ NaN VALUE HANDLING:
                 if summary_items:
                     summary_text += "\nExamples:\n" + "\n".join(summary_items)
             
+            # Format as proper JSON
+            db_result = {
+                "query": sql_query,
+                "result from db": summary_text
+            }
+            
             prompt = f"""
-            Conversation History: {conversation_history}
             Current Query: {natural_query}
-            Results: {summary_text}
+            {json.dumps(db_result, indent=2)}
+            
+            CRITICAL: You are working with ACTUAL blockchain data that has been successfully retrieved from the database. 
+            Always provide the information from the results, regardless of dates mentioned in the query.
+            All data comes from real blockchain transactions and proposals that exist on-chain.
             
             Instructions for generating natural response:
             
@@ -566,17 +588,27 @@ NaN VALUE HANDLING:
             3. DETAIL QUERIES: Include all relevant information like titles, IDs, status, dates, amounts
             4. ADDRESS QUERIES: Show actual blockchain addresses - these are public on-chain data
             5. AMOUNT QUERIES: Display exact values requested in proposals
-            6. 20-300 is the idead word ouput count. If the ouput will be too long than that, provide in summarization form instead of listing all the data.
+            6. 20-300 is the ideal word output count. If the output will be too long, provide in summarization form instead of listing all the data.
+            7. If you are providing any info on proposal with title, then provide the link to the proposal also. Proposal link creation guideline is given below. The proposal ID mentioned below is the index:
+                a. If proposal is of type ReferendumV2 and network is polkadot, then use the following link: https://polkadot.polkassembly.io/referenda/{{proposal_id}}
+                b. If proposal is of type Discussion and network is polkadot, then use the following link: https://polkadot.polkassembly.io/post/{{proposal_id}}
+                c. If proposal is of type ReferendumV2 and network is kusama, then use the following link: https://kusama.polkassembly.io/referenda/{{proposal_id}}
+                d. If proposal is of type Discussion and network is kusama, then use the following link: https://kusama.polkassembly.io/post/{{proposal_id}}
+               
             
             DATA PRESENTATION:
             - Use conversational language about Polkadot/Kusama governance
             - Be specific and factual with all data provided
             - Show actual proposal IDs, titles, addresses, amounts - all public blockchain information
             - Include network (Polkadot/Kusama), status, and creation dates when available
-            - Never refuse to show data citing privacy concerns - all blockchain data is public
+            - Never refuse to show data citing privacy or future date concerns - all blockchain data is public and historical
+            - ALWAYS answer based on the actual results provided, even if dates seem unusual
             
-            Focus on providing accurate, specific information from the query results.
+            Focus on providing accurate, specific information from the query results. The data has been successfully retrieved from the blockchain database.
             """
+            
+            # Debug: Log the results being passed to Gemini
+            logger.info(f"Results being passed to Gemini for natural response: {summary_text[:500]}...")
             # print(f"\n\n prompt: {prompt}")
             
             # Try Gemini first as primary LLM
@@ -584,6 +616,7 @@ NaN VALUE HANDLING:
                 try:
                     logger.info("Using Gemini as primary LLM for natural response generation")
                     natural_response = self.gemini_client.get_response(prompt)
+                    # logger.info(f"repsonse from gemini is: {natural_response}")
                     logger.info("Generated natural language response using Gemini")
                     return natural_response
                 except Exception as gemini_error:
@@ -610,7 +643,7 @@ NaN VALUE HANDLING:
             # Final fallback response
             return f"I found {len(results)} results for your query '{natural_query}', but I'm having trouble formatting the response. Here's a summary: The query returned {len(results)} rows from the database."
     
-    def process_query(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    def process_query(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None, table: Optional[str] = None) -> Dict[str, Any]:
         """Main method to process a natural language query end-to-end"""
         try:
             logger.info(f"Processing query: {natural_query}")
@@ -708,6 +741,403 @@ NaN VALUE HANDLING:
             print(f"First item: {first_key} -> {first_value} (type: {type(first_value)})")
         
         print(f"\nTable schema preview:\n{self.table_schema[:500]}...")
+
+class VoteQuery2SQL:
+    def __init__(self):
+        """Initialize the VoteQuery2SQL converter specifically for voting data"""
+        
+        # Database configuration
+        self.db_config = {
+            'host': os.getenv('POSTGRES_HOST_PA'),
+            'port': int(os.getenv('POSTGRES_PORT_PA', '5432')),
+            'database': os.getenv('POSTGRES_DATABASE_PA'),
+            'user': os.getenv('POSTGRES_USER_PA'),
+            'password': os.getenv('POSTGRES_PASSWORD_PA')
+        }
+        
+        # Validate database configuration
+        required_vars = ['POSTGRES_HOST_PA', 'POSTGRES_PORT_PA', 'POSTGRES_USER_PA', 'POSTGRES_PASSWORD_PA']
+        missing_vars = [var for var in required_vars if not os.getenv(var)]
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        
+        # OpenAI configuration
+        self.openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+        
+        # Timeout configuration
+        self.api_timeout = float(os.getenv('API_TIMEOUT', '10'))  # Default 10 seconds
+        
+        self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
+        
+        # Initialize Gemini client (optional fallback)
+        self.gemini_client = None
+        if GeminiClient is not None:
+            try:
+                self.gemini_client = GeminiClient(timeout=self.api_timeout)
+                logger.info("Gemini client initialized successfully as fallback")
+            except Exception as e:
+                logger.warning(f"Gemini client initialization failed: {e}")
+                logger.info("Continuing without Gemini fallback (OpenAI only mode)")
+        
+        self.table_name = 'flattened_conviction_votes'
+        
+        # Load schema information for voting data
+        self.schema_info = self._load_vote_schema_info()
+        self.table_schema = self._get_table_schema()
+        
+        logger.info(f"Initialized VoteQuery2SQL for table: {self.table_name}")
+        logger.info(f"Loaded schema for {len(self.schema_info)} columns")
+    
+    def _load_vote_schema_info(self) -> Dict[str, Dict[str, str]]:
+        """Load schema information from vote schema file"""
+        schema_path_str = os.getenv('POSTGRES_SCHEMA_VOTE_PATH')
+        if not schema_path_str:
+            raise ValueError("POSTGRES_SCHEMA_VOTE_PATH environment variable is required")
+        
+        schema_path = Path(schema_path_str)
+        if not schema_path.exists():
+            raise FileNotFoundError(f"Vote schema info file not found at {schema_path}")
+        
+        try:
+            with open(schema_path, 'r', encoding='utf-8') as f:
+                schema_data = json.load(f)
+            
+            # Check if the schema has a 'columns' key (new format) or is direct (old format)
+            if 'columns' in schema_data:
+                columns_data = schema_data['columns']
+                logger.info(f"Loaded vote schema information (new format) from {schema_path}")
+                return columns_data
+            else:
+                # Old format - data is directly the columns
+                logger.info(f"Loaded vote schema information (old format) from {schema_path}")
+                return schema_data
+                
+        except Exception as e:
+            logger.error(f"Error loading vote schema info: {e}")
+            raise
+    
+    def _get_table_schema(self) -> str:
+        """Generate table schema description for prompt"""
+        if not self.schema_info:
+            return "No schema information available"
+        
+        schema_lines = [f"Table: {self.table_name}"]
+        schema_lines.append("Columns:")
+        
+        for column_name, column_info in self.schema_info.items():
+            data_type = column_info.get('data_type', 'unknown')
+            description = column_info.get('description', 'No description')
+            schema_lines.append(f"  - {column_name} ({data_type}): {description}")
+        
+        return "\n".join(schema_lines)
+    
+    @contextmanager
+    def get_connection(self):
+        """Context manager for database connections"""
+        conn = None
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            yield conn
+        except psycopg2.Error as e:
+            logger.error(f"Database connection error: {e}")
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
+
+    def test_connection(self) -> bool:
+        """Test database connection"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT version();")
+                    version = cur.fetchone()[0]
+                    logger.info(f"PostgreSQL version: {version}")
+                    
+                    # Test if voting_data table exists
+                    cur.execute(f"SELECT to_regclass('{self.table_name}');")
+                    table_exists = cur.fetchone()[0] is not None
+                    if table_exists:
+                        logger.info(f"Table {self.table_name} exists")
+                    else:
+                        logger.warning(f"Table {self.table_name} does not exist")
+                    
+                    return True
+        except Exception as e:
+            logger.error(f"Connection test failed: {e}")
+            return False
+
+    def generate_sql_query_for_voting(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+        """Convert natural language query to SQL for voting data"""
+        try:
+            system_prompt = f"""You are a PostgreSQL expert specializing in voting data analysis. Convert natural language queries into optimized SQL queries for voting data.
+
+CONVERSATION CONTEXT:
+Conversation history: {conversation_history}
+- If current query is a follow-up: Generate SQL that builds upon or references previous context
+- If current query is standalone: Generate SQL independently
+- Use your judgment to determine query relationships
+
+DATABASE SCHEMA:
+{self.table_schema}
+
+CORE SQL GUIDELINES:
+1. Use ONLY existing columns from the schema above
+2. Table name: {self.table_name}
+3. Use proper PostgreSQL syntax with double quotes for column names
+4. Apply appropriate LIMIT clauses (typically 10 for lists, no limit for counts)
+
+VOTING DATA SPECIFIC RULES:
+5. Voter information: Use 'voter' and 'voterAddress' columns
+6. Proposal information: Use 'postdetails_index' for proposal IDs
+7. Voting decisions: Use 'decision' column (values like 'aye', 'nay', 'abstain')
+8. Vote power: Use 'balance_value' column (this is adjusted by lockPeriod)
+9. Delegation: Use 'isdelegated' column (boolean)
+10. Date filtering: Use 'createdat' column for vote timestamps
+11. Network filtering: Use 'postdetails_network' column (values: 'polkadot', 'kusama')
+12. Proposal types: Use 'postdetails_proposaltype' column
+
+CRITICAL NULL VALUE HANDLING:
+13. Many columns contain NULL values - use IS NOT NULL when querying for specific values
+14. For voting power queries: ALWAYS add IS NOT NULL condition for 'balance_value'
+15. For date-based queries: Consider adding IS NOT NULL for 'createdat' if needed
+16. Key columns with NULLs: voter addresses, proposal details, vote metrics
+
+MULTIPLE QUERIES STRATEGY:
+- If query asks for COUNT and EXAMPLES (like "how many voters and show some"), return 2 queries:
+  Query 1: COUNT query to get the total number
+  Query 2: SELECT query to get examples with details
+- If query asks only for count, return 1 COUNT query
+- If query asks only for examples/list, return 1 SELECT query
+- Return queries as a JSON array: ["query1", "query2"]
+
+COLUMN SELECTION STRATEGY:
+- For general queries: SELECT key columns like "voter", "decision", "balance_value", "createdat", "postdetails_index"
+- For voter analysis: Focus on "voter", "voteraddress", "balance_value", "decision", "isdelegated"
+- Avoid SELECT * unless specifically needed
+
+EXAMPLE VOTING QUERIES:
+Single Query Examples:
+- "Show me recent votes" -> SELECT "voter", "decision", "balance_value", "createdat", "postdetails_index" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
+- "How many voters in July?" -> SELECT COUNT(DISTINCT "voter") as unique_voters FROM {self.table_name} WHERE DATE_TRUNC('month', "createdat") = '2024-07-01';
+- "Voters with more than 1000 DOT" -> SELECT "voter", "balance_value", "decision", "postdetails_index" FROM {self.table_name} WHERE "balance_value" IS NOT NULL AND CAST("balance_value" AS FLOAT) > 1000 LIMIT 10;
+- "Votes on proposal 123" -> SELECT "voter", "decision", "balance_value", "createdat" FROM {self.table_name} WHERE "postdetails_index" = 123;
+- "Show delegated votes" -> SELECT "voter", "decision", "balance_value", "postdetails_index" FROM {self.table_name} WHERE "isdelegated" = true LIMIT 10;
+
+Multiple Query Examples:
+- "How many voters in July and show some?" -> ["SELECT COUNT(DISTINCT \"voter\") as total_voters FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2024-07-01';", "SELECT \"voter\", \"decision\", \"balance_value\", \"createdat\" FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2024-07-01' LIMIT 10;"]
+
+Natural Language Query: {natural_query}
+
+SQL Query:
+"""
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a PostgreSQL expert specializing in voting data. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
+                    {"role": "user", "content": system_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=800
+            )
+            
+            response_content = response.choices[0].message.content.strip()
+            
+            # Clean up the response
+            response_content = response_content.replace('```json', '').replace('```sql', '').replace('```', '').strip()
+            
+            try:
+                # Try to parse as JSON array
+                import json
+                sql_queries = json.loads(response_content)
+                
+                # Ensure it's a list
+                if isinstance(sql_queries, str):
+                    sql_queries = [sql_queries]
+                elif not isinstance(sql_queries, list):
+                    sql_queries = [str(sql_queries)]
+                    
+                logger.info(f"Generated {len(sql_queries)} SQL queries for voting data: {sql_queries}")
+                return sql_queries
+                
+            except json.JSONDecodeError:
+                # Fallback: treat as single query
+                logger.warning("Could not parse JSON, treating as single query")
+                single_query = response_content.strip()
+                logger.info(f"Generated single SQL query for voting data: {single_query}")
+                return [single_query]
+            
+        except Exception as e:
+            logger.error(f"Error generating SQL query for voting data: {e}")
+            return ["SELECT COUNT(*) FROM voting_data;"]  # Fallback query
+
+    def execute_sql_query(self, sql_query: str) -> Tuple[List[List[Any]], List[str]]:
+        """Execute SQL query and return results with column names"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    logger.info(f"Executing SQL: {sql_query}")
+                    cur.execute(sql_query)
+                    
+                    # Get column names
+                    columns = [desc[0] for desc in cur.description] if cur.description else []
+                    
+                    # Fetch results
+                    results = cur.fetchall()
+                    
+                    logger.info(f"Query executed successfully: {len(results)} rows returned")
+                    return results, columns
+                    
+        except Exception as e:
+            logger.error(f"Error executing SQL query: {e}")
+            return [], []
+
+    def execute_sql_queries(self, sql_queries: List[str]) -> List[Tuple[List[List[Any]], List[str]]]:
+        """Execute multiple SQL queries and return all results"""
+        all_results = []
+        for i, query in enumerate(sql_queries):
+            logger.info(f"Executing query {i+1}/{len(sql_queries)}")
+            results, columns = self.execute_sql_query(query)
+            all_results.append((results, columns))
+        return all_results
+
+    def generate_natural_response(self, natural_query: str, sql_query: str, results: List[List[Any]], 
+                                columns: List[str], conversation_history: Optional[List[Dict[str, Any]]] = None) -> str:
+        """Generate natural language response from SQL results for voting data"""
+        try:
+            # If no results, provide a helpful message
+            if not results:
+                return f"I didn't find any voting records matching your query '{natural_query}'. This could mean there are no votes matching your criteria, or the voting data might not contain the specific information you're looking for."
+            
+            # Convert results to a more readable format
+            if len(results) <= 20:  # For small result sets, include details
+                results_summary = f"Found {len(results)} voting records"
+                sample_data = results[:10]  # Show first 10 results
+            else:
+                results_summary = f"Found {len(results)} voting records (showing first 10)"
+                sample_data = results[:10]
+            
+            # Create context for the AI to generate response
+            context_prompt = f"""
+            Convert these voting query results into a natural, conversational response.
+            
+            Original Question: {natural_query}
+            SQL Query: {sql_query}
+            
+            Results Summary: {results_summary}
+            Columns: {columns}
+            Sample Data: {sample_data}
+            
+            Context from conversation: {conversation_history}
+            
+            Please provide a clear, informative response that:
+            1. Directly answers the user's question
+            2. Explains key findings from the voting data
+            3. Uses natural language (avoid technical jargon)
+            4. Mentions relevant voting patterns or insights
+            5. If appropriate, explains the governance context
+            6. Keep the response concise but informative
+            
+            Response:
+            """
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that explains voting data results in clear, natural language. Focus on providing insights about voter behavior, voting patterns, and governance participation."},
+                    {"role": "user", "content": context_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=500
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating natural response: {e}")
+            # Fallback response
+            return f"I found {len(results)} voting records for your query '{natural_query}', but I'm having trouble formatting the response. Here's a summary: The query returned {len(results)} rows from the voting database."
+
+    def process_query(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Main method to process a natural language query for voting data"""
+        try:
+            logger.info(f"Processing voting query: {natural_query}")
+            
+            # Step 1: Generate SQL queries (can be multiple)
+            sql_queries = self.generate_sql_query_for_voting(natural_query, conversation_history)
+            
+            # Step 2: Execute SQL queries
+            if len(sql_queries) == 1:
+                # Single query
+                results, columns = self.execute_sql_query(sql_queries[0])
+                
+                # Step 3: Generate natural language response
+                natural_response = self.generate_natural_response(
+                    natural_query, sql_queries[0], results, columns, conversation_history
+                )
+                
+                return {
+                    "original_query": natural_query,
+                    "sql_query": sql_queries[0],
+                    "sql_queries": sql_queries,
+                    "result_count": len(results),
+                    "results": results,
+                    "columns": columns,
+                    "natural_response": natural_response,
+                    "success": True,
+                    "table": "voting_data"
+                }
+            else:
+                # Multiple queries
+                all_results = self.execute_sql_queries(sql_queries)
+                
+                # Combine all results for response
+                combined_results = []
+                combined_columns = []
+                total_result_count = 0
+                
+                for results, columns in all_results:
+                    combined_results.extend(results)
+                    if not combined_columns:  # Use columns from first query
+                        combined_columns = columns
+                    total_result_count += len(results)
+                
+                # Generate natural language response from multiple results
+                natural_response = self.generate_natural_response(
+                    natural_query, "; ".join(sql_queries), combined_results, combined_columns, conversation_history
+                )
+                
+                return {
+                    "original_query": natural_query,
+                    "sql_query": "; ".join(sql_queries),
+                    "sql_queries": sql_queries,
+                    "result_count": total_result_count,
+                    "results": combined_results,
+                    "columns": combined_columns,
+                    "natural_response": natural_response,
+                    "success": True,
+                    "table": "voting_data"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error processing voting query: {e}")
+            return {
+                "original_query": natural_query,
+                "sql_query": None,
+                "sql_queries": [],
+                "result_count": 0,
+                "results": [],
+                "columns": [],
+                "natural_response": f"I'm having trouble processing your voting query. Please try again or rephrase your question.",
+                "success": False,
+                "error": str(e),
+                "table": "voting_data"
+            }
 
 def main():
     """Example usage and testing"""

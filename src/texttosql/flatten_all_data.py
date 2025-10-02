@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class DataFlattener:
-    def __init__(self, data_dir: str, openai_api_key: str = None):
+    def __init__(self, data_dir: str, output_data_dir: str = None, openai_api_key: str = None):
         self.data_dir = Path(data_dir)
         self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
         
@@ -33,9 +33,14 @@ class DataFlattener:
             self.openai_client = None
             logger.warning("No OpenAI API key provided. Metadata generation will be limited.")
         
+        if output_data_dir:
+            output_path = Path(output_data_dir)
+        else:
+            output_path = Path(__file__).parent.parent / "data"
+        
         # Create output directories - CSV files go to structured_data/data
-        self.csv_dir = Path(__file__).parent.parent / "data" / "csv_files"
-        self.metadata_dir = Path(__file__).parent.parent / "data" / "metadata"
+        self.csv_dir = output_path / "csv_files"
+        self.metadata_dir = output_path / "metadata"
         self.csv_dir.mkdir(exist_ok=True, parents=True)
         self.metadata_dir.mkdir(exist_ok=True, parents=True)
     
@@ -601,7 +606,7 @@ def main():
         logger.warning("OPENAI_API_KEY not set. Using basic metadata generation.")
     
     # Initialize flattener
-    flattener = DataFlattener(str(data_directory), openai_api_key)
+    flattener = DataFlattener(str(data_directory), openai_api_key=openai_api_key)
     
     # Process all files
     results = flattener.process_all_files()

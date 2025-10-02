@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from .config import Config
 from ..utils.embeddings import EmbeddingManager
 from ..utils.qa_generator import QAGenerator
-from ..guardrail.content_guardrails import get_guardrails
+from ..guardrail.guardrail import check_with_guardrail_async
 from ..utils.rate_limiter import check_rate_limit, get_client_stats
 from .chunks_reranker import rerank_static_chunks
 
@@ -39,13 +39,12 @@ logger = logging.getLogger(__name__)
 static_embedding_manager: Optional[EmbeddingManager] = None
 dynamic_embedding_manager: Optional[EmbeddingManager] = None
 qa_generator: Optional[QAGenerator] = None
-content_guardrails = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
     # Startup
-    global static_embedding_manager, dynamic_embedding_manager, qa_generator, content_guardrails
+    global static_embedding_manager, dynamic_embedding_manager, qa_generator
     
     try:
         logger.info("Starting Polkadot AI Chatbot API...")
@@ -54,9 +53,8 @@ async def lifespan(app: FastAPI):
         Config.validate_config()
         logger.info("Configuration validated")
         
-        # Initialize enhanced content guardrails
-        content_guardrails = get_guardrails(Config.OPENAI_API_KEY)
-        logger.info("Enhanced AI-powered content guardrails initialized")
+        # Content guardrails now handled by Bedrock guardrails in the query endpoint
+        logger.info("Bedrock guardrails will be used for content moderation")
         
         # Initialize static embedding manager
         logger.info("Initializing static embedding manager...")
@@ -212,7 +210,7 @@ async def query_chatbot(request: QueryRequest):
     start_time = datetime.now()
     
     try:
-        if not static_embedding_manager or not dynamic_embedding_manager or not qa_generator or not content_guardrails:
+        if not static_embedding_manager or not dynamic_embedding_manager or not qa_generator:
             raise HTTPException(status_code=503, detail="Service not initialized")
         
         if not static_embedding_manager.collection_exists() and not dynamic_embedding_manager.collection_exists():
@@ -229,31 +227,33 @@ async def query_chatbot(request: QueryRequest):
                 detail="Rate limit exceeded. Please try again later."
             )
         
-        # 🛡️ AI-powered content moderation
-        # is_safe, category, helpful_response = content_guardrails.moderate_content(request.question)
-        
-        
-        # if not is_safe:
-        #     logger.warning(f"Unsafe query blocked - Category: {category}")
-        #     return QueryResponse(
-        #         answer=helpful_response,
-        #         sources=[],
-        #         follow_up_questions=[
-        #             "How does Polkadot's governance system work?",
-        #             "What are the benefits of staking DOT tokens?",
-        #             "How do parachains communicate with each other?"
-        #         ],
-        #         remaining_requests=remaining_requests,
-        #         confidence=0.0,
-        #         context_used=False,
-        #         model_used=Config.OPENAI_MODEL,
-        #         chunks_used=0,
-        #         processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
-        #         timestamp=datetime.now().isoformat(),
-        #         search_method=f"blocked_{category}"
-        #     )
-        
+        # 🛡️ Bedrock Guardrail content moderation
         logger.info(f"Processing query from user {request.user_id}: '{request.question[:50]}...' (remaining: {remaining_requests})")
+        
+        guardrail_result = await check_with_guardrail_async(request.question)
+        
+        if guardrail_result["status"] == "blocked":
+            logger.warning(f"Query blocked by guardrail for user {request.user_id} from IP {request.client_ip}: {guardrail_result['reason']}")
+            return QueryResponse(
+                answer="This query violates our terms of service. Continued violations may result in your IP being blocked.",
+                sources=[],
+                follow_up_questions=[
+                    "How does Polkadot's governance system work?",
+                    "What are the benefits of staking DOT tokens?",
+                    "How do parachains communicate with each other?"
+                ],
+                remaining_requests=remaining_requests,
+                confidence=0.0,
+                context_used=False,
+                model_used="guardrail",
+                chunks_used=0,
+                processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
+                timestamp=datetime.now().isoformat(),
+                search_method="guardrail_blocked"
+            )
+        elif guardrail_result["status"] == "error":
+            logger.error(f"Guardrail error for user {request.user_id}: {guardrail_result['reason']}")
+            # Continue processing if guardrail fails - don't block legitimate queries due to technical issues
         
         # Search for relevant chunks in both collections
         static_chunks = static_embedding_manager.search_similar_chunks(

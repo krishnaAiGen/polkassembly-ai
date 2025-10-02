@@ -2,6 +2,7 @@
 Simple API wrapper for the Query2SQL system
 """
 import json
+from logging import Logger
 import sys
 import os
 from typing import Optional, List, Dict, Any
@@ -47,19 +48,27 @@ def send_error_to_slack(query: str, error: str, error_source: str = "Query2SQL")
     except Exception as slack_error:
         print(f"Failed to send error notification to Slack: {slack_error}")
 
-def ask_question(question: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> dict:
+def ask_question(question: str, conversation_history: Optional[List[Dict[str, Any]]] = None, table: Optional[str] = None) -> dict:
     """
     Simple function to ask a natural language question and get results
     
     Args:
-        question (str): Natural language question about governance data
+        question (str): Natural language question about governance or voting data
+        conversation_history: Previous conversation context
+        table (str): Target table - 'governance_data' or 'voting_data'
         
     Returns:
         dict: Response containing SQL query, results, and natural language answer
     """
     try:
-        # Initialize the query processor
-        processor = Query2SQL()
+        # Route to appropriate processor based on table
+        if table == 'voting_data':
+            from .query2sql import VoteQuery2SQL
+            print("Extracting from voting table")
+            processor = VoteQuery2SQL()
+        else:
+            # Default to governance data processor
+            processor = Query2SQL()
         
         # Process the question with conversation history
         result = processor.process_query(question, conversation_history)
@@ -68,7 +77,7 @@ def ask_question(question: str, conversation_history: Optional[List[Dict[str, An
         
     except Exception as e:
         # Send error notification to Slack
-        send_error_to_slack(question, str(e), "Query2SQL")
+        send_error_to_slack(question, str(e), f"Query2SQL-{table or 'governance'}")
         
         return {
             "original_query": question,
@@ -78,7 +87,8 @@ def ask_question(question: str, conversation_history: Optional[List[Dict[str, An
             "columns": [],
             "natural_response": f"I'm having trouble processing your query. Please try again or rephrase your question in the next prompt",
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "table": table or "governance_data"
         }
 
 def main():
