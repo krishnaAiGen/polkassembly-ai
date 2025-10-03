@@ -197,6 +197,9 @@ class Query2SQL:
     
     def generate_sql_query(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> List[str]:
         """Convert natural language query to SQL using OpenAI - can return multiple queries"""
+
+        # print("Schema of table is", self.table_schema)
+
         try:
 
             
@@ -207,6 +210,7 @@ Conversation history: {conversation_history}
 - If current query is a follow-up: Generate SQL that builds upon or references previous context
 - If current query is standalone: Generate SQL independently
 - Use your judgment to determine query relationships
+
 
 DATABASE SCHEMA:
 {self.table_schema}
@@ -256,6 +260,7 @@ NaN VALUE HANDLING:
             COLUMN SELECTION STRATEGY:
             - For general queries: SELECT key columns like "title", "index", "onchaininfo_status", "createdat", "source_network", "content"
             - For searches: Focus on "title", "index", "onchaininfo_status", "createdat" , "content"
+            - For FINANCIAL/AMOUNT queries: ALWAYS include "onchaininfo_beneficiaries_0_assetid" along with "onchaininfo_beneficiaries_0_amount"
             - Avoid SELECT * unless specifically needed - it causes long responses. Only use when somebody asks fro more info on proposals, referenda ID.
             - But, if somebody ask, proposals in voting then also use other attributes such as DecisionDepositPlaced, Submitted, ConfirmStarted, ConfirmAborted along with Deciding.
             
@@ -272,7 +277,7 @@ NaN VALUE HANDLING:
             - "Give me proposals before 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat" , "content" FROM {self.table_name} WHERE "createdat" < '2024-01-01' LIMIT 10;
             - "Give me proposals between dates" -> SELECT "title", "index", "onchaininfo_status", "createdat" , "content" FROM {self.table_name} WHERE "createdat" BETWEEN '2024-01-01' AND '2024-01-02' LIMIT 10;
             - "Count total proposals" -> SELECT COUNT(*) as total_proposals FROM {self.table_name};
-            - "Show me proposal amounts" -> SELECT "title", "index", "onchaininfo_beneficiaries_0_amount", "createdat" FROM {self.table_name} WHERE "onchaininfo_beneficiaries_0_amount" IS NOT NULL LIMIT 10;
+            - "Show me proposal amounts" -> SELECT "title", "onchaininfo_beneficiaries_0_assetid", "index", "onchaininfo_beneficiaries_0_amount", "createdat" FROM {self.table_name} WHERE "onchaininfo_beneficiaries_0_amount" IS NOT NULL LIMIT 10;
             
             Multiple Query Examples:
             - "How many proposals in August 2025 and name a few?" -> ["SELECT COUNT(*) as total_count FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2025-08-01';", "SELECT \"title\", \"index\", \"onchaininfo_status\", \"createdat\" FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2025-08-01' LIMIT 10;"]
@@ -284,6 +289,7 @@ NaN VALUE HANDLING:
                     SELECT
                         "title",
                         "index",
+                        "onchaininfo_beneficiaries_0_assetid",
                         "onchaininfo_beneficiaries_0_amount",
                         "createdat"
                     FROM
@@ -306,7 +312,7 @@ NaN VALUE HANDLING:
             SQL Query:
             """
             
-            # print(f"sql prompt, {system_prompt}")
+            print(f"sql prompt, {system_prompt}")
             
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
@@ -458,6 +464,11 @@ NaN VALUE HANDLING:
             - Be specific and factual with the data provided
             - Never refuse to show data citing privacy or future date concerns - all blockchain data is public and historical
             - ALWAYS answer based on the actual results provided, even if dates seem unusual
+            - When there is amount in the db_result or in query, then format it accoring to following assetId rule:
+                - If assetId is NaN, then don't format anything, keep the amount as it is.
+                -If its 1984, then remove six zero from the amount from last.
+                -If its 1337, then remove six zero from the amount from last.
+                -If its 30, then remove three zero from the amount from last.
             
             IMPORTANT: All data is public blockchain information. Show actual values, addresses, and details.
             The data has been successfully retrieved from the blockchain database.
@@ -567,6 +578,8 @@ NaN VALUE HANDLING:
                 "query": sql_query,
                 "result from db": summary_text
             }
+
+            # print(f"\n\n db_result: {db_result}")
             
             prompt = f"""
             Current Query: {natural_query}
@@ -603,7 +616,12 @@ NaN VALUE HANDLING:
             - Include network (Polkadot/Kusama), status, and creation dates when available
             - Never refuse to show data citing privacy or future date concerns - all blockchain data is public and historical
             - ALWAYS answer based on the actual results provided, even if dates seem unusual
-            
+            - When there is amount in the db_result or in query, then format it accoring to following assetId rule.:
+                - If assetId is NaN, then don't format anything, keep the amount as it is.
+                -If its 1984, then remove six zero from the amount from last.
+                -If its 1337, then remove six zero from the amount from last.
+                -If its 30, then remove three zero from the amount from last.
+
             Focus on providing accurate, specific information from the query results. The data has been successfully retrieved from the blockchain database.
             """
             
@@ -874,62 +892,131 @@ class VoteQuery2SQL:
     def generate_sql_query_for_voting(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> List[str]:
         """Convert natural language query to SQL for voting data"""
         try:
-            system_prompt = f"""You are a PostgreSQL expert specializing in voting data analysis. Convert natural language queries into optimized SQL queries for voting data.
-
-CONVERSATION CONTEXT:
-Conversation history: {conversation_history}
-- If current query is a follow-up: Generate SQL that builds upon or references previous context
-- If current query is standalone: Generate SQL independently
-- Use your judgment to determine query relationships
+            system_prompt = f"""
+You are a PostgreSQL expert specializing in voting data analysis. Convert natural language queries into optimized SQL queries for voting data.
 
 DATABASE SCHEMA:
+Main Table: {self.table_name}
 {self.table_schema}
 
+Related Table: conviction_vote
+- Contains "self_voting_power" (voting power/balance for each vote)
+- Joined via "parent_vote_id" (foreign key in {self.table_name}) → "id" (primary key in conviction_vote)
+
 CORE SQL GUIDELINES:
-1. Use ONLY existing columns from the schema above
-2. Table name: {self.table_name}
-3. Use proper PostgreSQL syntax with double quotes for column names
-4. Apply appropriate LIMIT clauses (typically 10 for lists, no limit for counts)
+1. Use ONLY existing columns from the schema above.
+2. Main table name: {self.table_name}
+3. Use proper PostgreSQL syntax with double quotes for column names.
+4. Apply appropriate LIMIT clauses (typically 10 for lists; no LIMIT for counts/aggregates).
+5. Always order explicitly when returning recent items (e.g., ORDER BY main."created_at" DESC).
+
+JOIN REQUIREMENTS:
+6. When querying voting power/balance, JOIN with conviction_vote table:
+   FROM {self.table_name} AS main
+   LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+7. Use "cv.self_voting_power" for all voting power queries (replaces "balance").
+8. Always use table aliases (main, cv) to avoid ambiguity.
 
 VOTING DATA SPECIFIC RULES:
-5. Voter information: Use 'voter' and 'voterAddress' columns
-6. Proposal information: Use 'postdetails_index' for proposal IDs
-7. Voting decisions: Use 'decision' column (values like 'aye', 'nay', 'abstain')
-8. Vote power: Use 'balance_value' column (this is adjusted by lockPeriod)
-9. Delegation: Use 'isdelegated' column (boolean)
-10. Date filtering: Use 'createdat' column for vote timestamps
-11. Network filtering: Use 'postdetails_network' column (values: 'polkadot', 'kusama')
-12. Proposal types: Use 'postdetails_proposaltype' column
+9. Voter information: Use "main.voter".
+10. Proposal identification: Use "main.proposal_index" or "main.proposal_id" for proposal/referendum IDs.
+11. Voting decisions: Use "main.decision" (values like 'aye', 'nay', 'abstain' — case-insensitive compare with ILIKE when needed).
+12. Voting power: Use "cv.self_voting_power" (FLOAT). When querying voting power, always include the JOIN with conviction_vote.
+13. Delegation: Use "main.is_delegated" (BOOLEAN) and "main.delegated_to" for target account.
+14. Date filtering: Use "main.created_at" for when the vote was cast; use "main.removed_at" to exclude revoked/invalidated votes (e.g., WHERE main."removed_at" IS NULL for "active" votes).
+15. Proposal types: Use "main.type" (e.g., 'ReferendumV2', 'Treasury', 'Fellowship').
+16. Lock period / conviction: Use "main.lock_period" for conviction or lock-time–related queries.
 
 CRITICAL NULL VALUE HANDLING:
-13. Many columns contain NULL values - use IS NOT NULL when querying for specific values
-14. For voting power queries: ALWAYS add IS NOT NULL condition for 'balance_value'
-15. For date-based queries: Consider adding IS NOT NULL for 'createdat' if needed
-16. Key columns with NULLs: voter addresses, proposal details, vote metrics
+17. Many columns may be NULL — add IS NOT NULL when the query semantically requires a value.
+18. For voting power queries: ALWAYS add "cv.self_voting_power IS NOT NULL" and include JOIN with conviction_vote.
+19. For date-based queries: Consider adding "main.created_at IS NOT NULL".
+20. When filtering by proposal or voter, consider "main.proposal_index IS NOT NULL" and/or "main.voter IS NOT NULL" as appropriate.
 
 MULTIPLE QUERIES STRATEGY:
-- If query asks for COUNT and EXAMPLES (like "how many voters and show some"), return 2 queries:
-  Query 1: COUNT query to get the total number
-  Query 2: SELECT query to get examples with details
-- If query asks only for count, return 1 COUNT query
-- If query asks only for examples/list, return 1 SELECT query
-- Return queries as a JSON array: ["query1", "query2"]
+- If the user asks for COUNT and EXAMPLES (e.g., "how many voters and show some"), return 2 queries:
+  • Query 1: COUNT query to get the total number
+  • Query 2: SELECT query to get examples with details
+- If the user asks only for a count, return 1 COUNT query.
+- If the user asks only for a list/examples, return 1 SELECT query.
+- Return queries as a JSON array: ["query1", "query2"].
 
 COLUMN SELECTION STRATEGY:
-- For general queries: SELECT key columns like "voter", "decision", "balance_value", "createdat", "postdetails_index"
-- For voter analysis: Focus on "voter", "voteraddress", "balance_value", "decision", "isdelegated"
-- Avoid SELECT * unless specifically needed
+- General lists: select key columns like "main.voter", "main.decision", "cv.self_voting_power", "main.created_at", "main.proposal_index", "main.type", "main.is_delegated".
+- Voter analysis: focus on "main.voter", "cv.self_voting_power", "main.decision", "main.is_delegated", "main.delegated_to", "main.created_at".
+- Proposal analysis: include "main.proposal_index", "main.type", "main.created_at", "main.decision", "cv.self_voting_power".
+- Avoid SELECT * unless absolutely necessary.
 
-EXAMPLE VOTING QUERIES:
+EXAMPLE VOTING QUERIES (WITH CORRECT JOIN):
+
 Single Query Examples:
-- "Show me recent votes" -> SELECT "voter", "decision", "balance_value", "createdat", "postdetails_index" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
-- "How many voters in July?" -> SELECT COUNT(DISTINCT "voter") as unique_voters FROM {self.table_name} WHERE DATE_TRUNC('month', "createdat") = '2024-07-01';
-- "Voters with more than 1000 DOT" -> SELECT "voter", "balance_value", "decision", "postdetails_index" FROM {self.table_name} WHERE "balance_value" IS NOT NULL AND CAST("balance_value" AS FLOAT) > 1000 LIMIT 10;
-- "Votes on proposal 123" -> SELECT "voter", "decision", "balance_value", "createdat" FROM {self.table_name} WHERE "postdetails_index" = 123;
-- "Show delegated votes" -> SELECT "voter", "decision", "balance_value", "postdetails_index" FROM {self.table_name} WHERE "isdelegated" = true LIMIT 10;
+- "Show me recent votes"
+  -> SELECT main."voter", main."decision", cv."self_voting_power", main."created_at", main."proposal_index", main."type"
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."created_at" IS NOT NULL
+     ORDER BY main."created_at" DESC
+     LIMIT 10;
 
-Multiple Query Examples:
-- "How many voters in July and show some?" -> ["SELECT COUNT(DISTINCT \"voter\") as total_voters FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2024-07-01';", "SELECT \"voter\", \"decision\", \"balance_value\", \"createdat\" FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2024-07-01' LIMIT 10;"]
+- "How many voters in July 2025?"
+  -> SELECT COUNT(DISTINCT main."voter") AS unique_voters
+     FROM {self.table_name} AS main
+     WHERE main."created_at" IS NOT NULL
+       AND DATE_TRUNC('month', main."created_at") = '2025-07-01';
+
+- "Voters with more than 1000 DOT voting power"
+  -> SELECT main."voter", cv."self_voting_power"
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE cv."self_voting_power" IS NOT NULL
+       AND cv."self_voting_power" > 1000
+     ORDER BY cv."self_voting_power" DESC
+     LIMIT 10;
+
+- "Votes on proposal 123"
+  -> SELECT main."voter", main."decision", cv."self_voting_power", main."created_at"
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."proposal_index" = 123;
+
+- "Show delegated votes"
+  -> SELECT main."voter", main."delegated_to", main."decision", cv."self_voting_power", main."proposal_index"
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."is_delegated" = TRUE
+     LIMIT 10;
+
+- "Active votes only (exclude removed)"
+  -> SELECT main."voter", main."decision", cv."self_voting_power", main."created_at", main."proposal_index"
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."removed_at" IS NULL
+     ORDER BY main."created_at" DESC
+     LIMIT 10;
+
+- "Votes with conviction lock period >= 4"
+  -> SELECT main."voter", main."decision", cv."self_voting_power", main."lock_period", main."proposal_index"
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."lock_period" IS NOT NULL AND main."lock_period" >= 4
+     ORDER BY main."lock_period" DESC
+     LIMIT 10;
+
+- "Top voters by voting power"
+  -> SELECT main."voter", SUM(cv."self_voting_power") AS total_voting_power, COUNT(*) AS vote_count
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE cv."self_voting_power" IS NOT NULL
+     GROUP BY main."voter"
+     ORDER BY total_voting_power DESC
+     LIMIT 10;
+
+Multiple Query Example:
+- "How many voters in July and show some?"
+  -> [
+       "SELECT COUNT(DISTINCT main.\"voter\") AS total_voters FROM {self.table_name} AS main WHERE main.\"created_at\" IS NOT NULL AND DATE_TRUNC('month', main.\"created_at\") = '2025-07-01';",
+       "SELECT main.\"voter\", main.\"decision\", cv.\"self_voting_power\", main.\"created_at\", main.\"proposal_index\" FROM {self.table_name} AS main LEFT JOIN conviction_vote AS cv ON main.\"parent_vote_id\" = cv.\"id\" WHERE main.\"created_at\" IS NOT NULL AND DATE_TRUNC('month', main.\"created_at\") = '2025-07-01' ORDER BY main.\"created_at\" DESC LIMIT 10;"
+     ]
 
 Natural Language Query: {natural_query}
 
@@ -1022,6 +1109,21 @@ SQL Query:
                 results_summary = f"Found {len(results)} voting records (showing first 10)"
                 sample_data = results[:10]
             
+            # Determine response style based on conversation history
+            has_context = conversation_history and len(conversation_history) > 0
+            context_info = ""
+            if has_context:
+                # Extract relevant context from conversation history
+                recent_topics = []
+                for msg in conversation_history[-3:]:  # Last 3 messages
+                    if isinstance(msg, dict) and msg.get('role') == 'user':
+                        content = msg.get('content', '')
+                        if content and len(content) > 10:
+                            recent_topics.append(content[:100])
+                
+                if recent_topics:
+                    context_info = f"Previous conversation topics: {'; '.join(recent_topics)}"
+            
             # Create context for the AI to generate response
             context_prompt = f"""
             Convert these voting query results into a natural, conversational response.
@@ -1033,15 +1135,29 @@ SQL Query:
             Columns: {columns}
             Sample Data: {sample_data}
             
-            Context from conversation: {conversation_history}
+            {context_info}
             
-            Please provide a clear, informative response that:
-            1. Directly answers the user's question
-            2. Explains key findings from the voting data
-            3. Uses natural language (avoid technical jargon)
-            4. Mentions relevant voting patterns or insights
-            5. If appropriate, explains the governance context
-            6. Keep the response concise but informative
+            RESPONSE STYLE GUIDELINES:
+            1. BE CONCISE: Give direct, to-the-point answers unless the question specifically asks for detailed analysis
+            2. ANSWER FIRST: Start with the direct answer to the user's question
+            3. MINIMAL CONTEXT: Only add insights/context if:
+               - The user explicitly asks for analysis or insights
+               - The conversation history shows they want detailed explanations
+               - The question is complex and requires context to understand
+            4. AVOID SPECULATION: Don't add "could suggest" or "might indicate" unless specifically asked for analysis
+            5. NUMBERS: Present key numbers clearly but don't over-explain their significance unless asked
+            6. If you receive proposal_index in result. Then you should must make a link like below:
+                - https://polkadot.polkassembly.io/referenda/{{proposal_index}} 
+            7. When you receive voting self_voting_power, then always remove 9 zero from it. For ex: 10000000000 becomes 1.
+               
+            
+            EXAMPLES:
+            - Question: "What proposal got the most votes?" 
+              Good: "Proposal 1424 received the highest voting power with 2,955,235,968,346,605,113."
+              Bad: "The proposal that received the highest number of votes... This indicates... It's interesting to note..."
+            
+            - Question: "Analyze voting patterns for treasury proposals"
+              Good: [Longer response with analysis since "analyze" was requested]
             
             Response:
             """
@@ -1049,11 +1165,11 @@ SQL Query:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that explains voting data results in clear, natural language. Focus on providing insights about voter behavior, voting patterns, and governance participation."},
+                    {"role": "system", "content": "You are a helpful assistant that provides concise, direct answers about voting data. Be brief and to-the-point unless the user specifically asks for detailed analysis or insights. Start with the direct answer, then add context only if needed."},
                     {"role": "user", "content": context_prompt}
                 ],
-                temperature=0.3,
-                max_tokens=500
+                temperature=0.2,
+                max_tokens=300
             )
             
             return response.choices[0].message.content.strip()

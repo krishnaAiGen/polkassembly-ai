@@ -274,9 +274,9 @@ class CSVCombiner:
 
 def main():
     """Main execution function"""
-    # Configuration
-    csv_directory = Path(__file__).parent.parent / "data" / "csv_files"
-    output_directory = Path(__file__).parent.parent / "data" / "one_table"
+    # Configuration - use the new CSV location and output location
+    csv_directory = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/all_csv")
+    output_directory = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/one_table")
     
     if not csv_directory.exists():
         logger.error(f"CSV directory not found: {csv_directory}")

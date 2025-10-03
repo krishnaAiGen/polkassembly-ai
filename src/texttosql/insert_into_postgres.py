@@ -290,7 +290,7 @@ CREATE TABLE {self.table_name} (
         # Common columns to index
         index_candidates = [
             'source_network', 'source_proposal_type', 'status', 'created_at',
-            'updated_at', 'id', 'proposal_hash', 'network'
+            'updated_at', 'id', 'proposal_hash', 'network', 'row_index'
         ]
         
         for col in index_candidates:
@@ -605,12 +605,12 @@ CREATE TABLE {self.table_name} (
 
 def main():
     """Main execution function"""
-    # Path to the combined CSV file
-    csv_file = Path(__file__).parent.parent / "data" / "one_table" / "combined_governance_data.csv"
+    # Path to the specific CSV file to insert
+    csv_file = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/one_table/filter_data/governance_data_86.csv")
     
     if not csv_file.exists():
-        logger.error(f"Combined CSV file not found at: {csv_file}")
-        logger.error("Please run create_one_table.py first to generate the combined CSV.")
+        logger.error(f"CSV file not found at: {csv_file}")
+        logger.error("Please ensure the governance_data_86.csv file exists in the specified location.")
         return
     
     try:
