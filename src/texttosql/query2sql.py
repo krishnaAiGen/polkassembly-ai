@@ -16,6 +16,13 @@ from openai import OpenAI
 from contextlib import contextmanager
 import pandas as pd
 
+# Add tiktoken for token counting
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
+    print("Warning: tiktoken not available, using approximate token counting")
+
 # Add Gemini client
 try:
     import sys
@@ -107,6 +114,274 @@ class Query2SQL:
             logger.error(f"Error loading schema info: {e}")
             raise
     
+    def format_amount_by_asset_id(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Format amounts based on assetId rules:
+        - If assetId is NaN/None: keep amount as is, it is DOT
+        - If assetId is 1984: remove 6 zeros (divide by 1,000,000) USDT
+        - If assetId is 1337: remove 6 zeros (divide by 1,000,000)  USDC
+        - If assetId is 30: remove 3 zeros (divide by 1,000) DED
+        """
+        if not results:
+            return results
+        
+        formatted_results = []
+        
+        for result in results:
+            formatted_result = result.copy()
+            
+            # Check if this result has amount and assetId fields
+            amount_field = None
+            asset_id_field = None
+            
+            # Find amount and assetId fields (they might have different names)
+            for key in result.keys():
+                if 'amount' in key.lower() and 'beneficiaries' in key.lower():
+                    amount_field = key
+                elif 'assetid' in key.lower() and 'beneficiaries' in key.lower():
+                    asset_id_field = key
+            
+            # If we found both fields, apply formatting
+            if amount_field and asset_id_field:
+                amount_value = result.get(amount_field)
+                asset_id_value = result.get(asset_id_field)
+                
+                # Only format if amount exists and is not None
+                if amount_value is not None and str(amount_value) not in ['', 'None', 'NaN']:
+                    try:
+                        # Convert amount to float for processing
+                        amount_float = float(amount_value)
+                        
+                        # Apply formatting based on assetId
+                        if asset_id_value is not None and str(asset_id_value) not in ['', 'None', 'NaN']:
+                            asset_id_int = int(float(asset_id_value))
+                            
+                            if asset_id_int == 1984:
+                                # Remove 6 zeros (divide by 1,000,000) - USDT
+                                formatted_amount = amount_float / 1_000_000
+                                formatted_result[f"{amount_field}_formatted"] = f"{formatted_amount:,.2f}"
+                                formatted_result[f"{amount_field}_display"] = f"{formatted_amount:,.2f} USDT"
+                                
+                            elif asset_id_int == 1337:
+                                # Remove 6 zeros (divide by 1,000,000) - USDC
+                                formatted_amount = amount_float / 1_000_000
+                                formatted_result[f"{amount_field}_formatted"] = f"{formatted_amount:,.2f}"
+                                formatted_result[f"{amount_field}_display"] = f"{formatted_amount:,.2f} USDC"
+                                
+                            elif asset_id_int == 30:
+                                # Remove 3 zeros (divide by 1,000) - DED
+                                formatted_amount = amount_float / 1_000
+                                formatted_result[f"{amount_field}_formatted"] = f"{formatted_amount:,.2f}"
+                                formatted_result[f"{amount_field}_display"] = f"{formatted_amount:,.2f} DED"
+                                
+                            else:
+                                # Unknown assetId, keep original
+                                formatted_result[f"{amount_field}_formatted"] = f"{amount_float:,.2f}"
+                                formatted_result[f"{amount_field}_display"] = f"{amount_float:,.2f} (Asset ID: {asset_id_int})"
+                        else:
+                            # AssetId is NaN/None, keep original amount - DOT
+                            formatted_result[f"{amount_field}_formatted"] = f"{amount_float:,.2f}"
+                            formatted_result[f"{amount_field}_display"] = f"{amount_float:,.2f} DOT"
+                            
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Could not format amount {amount_value} with assetId {asset_id_value}: {e}")
+                        # Keep original values if formatting fails
+                        pass
+            
+            formatted_results.append(formatted_result)
+        
+        return formatted_results
+    
+    def add_proposal_links(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Add proposal links to results based on proposal type, network, and index/id.
+        Link generation rules:
+        - ReferendumV2 + polkadot: https://polkadot.polkassembly.io/referenda/{proposal_id}
+        - Discussion + polkadot: https://polkadot.polkassembly.io/post/{proposal_id}
+        - ReferendumV2 + kusama: https://kusama.polkassembly.io/referenda/{proposal_id}
+        - Discussion + kusama: https://kusama.polkassembly.io/post/{proposal_id}
+        """
+        if not results:
+            return results
+        
+        enhanced_results = []
+        
+        for result in results:
+            enhanced_result = result.copy()
+            
+            # Find relevant fields for link generation
+            proposal_id = None
+            network = None
+            proposal_type = None
+            title = None
+            
+            # Extract proposal ID (try multiple possible field names)
+            for key in result.keys():
+                if key.lower() in ['index', 'proposal_index', 'id', 'proposal_id']:
+                    proposal_id = result.get(key)
+                    break
+            
+            # Extract network (try multiple field names)
+            for key in result.keys():
+                if 'network' in key.lower():
+                    network = result.get(key)
+                    if network:
+                        network = str(network).lower()
+                    break
+            
+            # If network not found in results, default to polkadot (most common)
+            if not network:
+                network = 'polkadot'
+                logger.debug(f"Network not found in result, defaulting to 'polkadot'")
+            
+            # Extract proposal type (try multiple field names)
+            for key in result.keys():
+                if 'proposal_type' in key.lower() or 'proposaltype' in key.lower() or key.lower() == 'type':
+                    proposal_type = result.get(key)
+                    break
+            
+            # If proposal type not found in results, default to ReferendumV2 (most common)
+            if not proposal_type:
+                proposal_type = 'ReferendumV2'
+                logger.debug(f"Proposal type not found in result, defaulting to 'ReferendumV2'")
+            
+            # Extract title
+            for key in result.keys():
+                if key.lower() == 'title':
+                    title = result.get(key)
+                    break
+            
+            # Debug logging
+            logger.debug(f"Link generation - ID: {proposal_id}, Network: {network}, Type: {proposal_type}, Title: {title}")
+            
+            # Generate link if we have the required information
+            if proposal_id is not None and network and proposal_type:
+                try:
+                    # Clean and validate proposal_id
+                    proposal_id_clean = str(proposal_id).strip()
+                    if proposal_id_clean and proposal_id_clean != 'None' and proposal_id_clean != 'NaN':
+                        
+                        # Generate link based on type and network
+                        link = None
+                        
+                        if network in ['polkadot'] and proposal_type in ['ReferendumV2']:
+                            link = f"https://polkadot.polkassembly.io/referenda/{proposal_id_clean}"
+                        elif network in ['polkadot'] and proposal_type in ['Discussion']:
+                            link = f"https://polkadot.polkassembly.io/post/{proposal_id_clean}"
+                        elif network in ['kusama'] and proposal_type in ['ReferendumV2']:
+                            link = f"https://kusama.polkassembly.io/referenda/{proposal_id_clean}"
+                        elif network in ['kusama'] and proposal_type in ['Discussion']:
+                            link = f"https://kusama.polkassembly.io/post/{proposal_id_clean}"
+                        
+                        # Add link to result if generated
+                        if link:
+                            enhanced_result['proposal_link'] = link
+                            
+                            # Also create a display version with title if available
+                            if title and str(title).strip() and str(title).strip() != 'None':
+                                enhanced_result['proposal_link_display'] = f"[{title}]({link})"
+                            else:
+                                enhanced_result['proposal_link_display'] = f"[Proposal {proposal_id_clean}]({link})"
+                            
+                            logger.debug(f"Generated proposal link: {link}")
+                        
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Could not generate proposal link for ID {proposal_id}: {e}")
+                    pass
+            
+            enhanced_results.append(enhanced_result)
+        
+        return enhanced_results
+    
+    def count_tokens(self, text: str, model: str = "gpt-4") -> int:
+        """
+        Count tokens in text using tiktoken or approximate counting
+        """
+        if tiktoken:
+            try:
+                encoding = tiktoken.encoding_for_model(model)
+                return len(encoding.encode(text))
+            except Exception as e:
+                logger.warning(f"Error with tiktoken: {e}, using approximate counting")
+        
+        # Approximate token counting (1 token ≈ 4 characters for English)
+        return len(text) // 4
+    
+    def trim_prompt_to_fit_tokens(self, system_prompt: str, max_tokens: int = 8192, completion_tokens: int = 800, buffer_tokens: int = 200) -> str:
+        """
+        Trim the system prompt to fit within token limits
+        
+        Args:
+            system_prompt: The full system prompt
+            max_tokens: Maximum tokens allowed by the model (default: 8192 for GPT-4)
+            completion_tokens: Tokens reserved for completion (default: 800)
+            buffer_tokens: Safety buffer tokens (default: 200)
+        
+        Returns:
+            Trimmed system prompt that fits within limits
+        """
+        # Calculate available tokens for the prompt
+        available_tokens = max_tokens - completion_tokens - buffer_tokens
+        
+        # Count current tokens
+        current_tokens = self.count_tokens(system_prompt)
+        
+        logger.info(f"Token analysis - Current: {current_tokens}, Available: {available_tokens}, Max: {max_tokens}")
+        
+        # If within limits, return as-is
+        if current_tokens <= available_tokens:
+            return system_prompt
+        
+        # Need to trim - calculate target length
+        target_length = int(len(system_prompt) * (available_tokens / current_tokens))
+        
+        # Find good places to cut (preserve important sections)
+        lines = system_prompt.split('\n')
+        
+        # Priority sections to keep (in order of importance)
+        essential_sections = [
+            'COLUMN SELECTION STRATEGY:',
+            'EXAMPLE QUERIES:',
+            'CRITICAL NULL VALUE HANDLING:',
+            'NaN VALUE HANDLING:',
+            'Very very Important Rule:'
+        ]
+        
+        # Build trimmed prompt by keeping essential sections
+        trimmed_lines = []
+        current_length = 0
+        
+        # First pass: add essential sections
+        for line in lines:
+            if any(section in line for section in essential_sections):
+                # Found essential section, add it and some context
+                section_start = lines.index(line)
+                # Add this section and next 10 lines (or until next section)
+                for i in range(section_start, min(section_start + 10, len(lines))):
+                    if lines[i] not in trimmed_lines:
+                        test_length = current_length + len(lines[i]) + 1
+                        if test_length < target_length:
+                            trimmed_lines.append(lines[i])
+                            current_length = test_length
+                        else:
+                            break
+        
+        # Second pass: add other important lines if space allows
+        for line in lines:
+            if line not in trimmed_lines and current_length + len(line) + 1 < target_length:
+                # Skip very long lines (likely examples that can be shortened)
+                if len(line) < 200:
+                    trimmed_lines.append(line)
+                    current_length += len(line) + 1
+        
+        trimmed_prompt = '\n'.join(trimmed_lines)
+        
+        # Final token check
+        final_tokens = self.count_tokens(trimmed_prompt)
+        logger.info(f"Prompt trimmed: {current_tokens} -> {final_tokens} tokens (target: {available_tokens})")
+        
+        return trimmed_prompt
+    
     def _get_table_schema(self) -> str:
         """Load schema directly from JSON file"""
         try:
@@ -122,31 +397,9 @@ class Query2SQL:
             with open(schema_path, 'r') as f:
                 schema_data = json.load(f)
             
-            # Format the schema for OpenAI prompt
-            schema_parts = []
-            table_name = schema_data.get('table_name', self.table_name)
-            schema_parts.append(f"Table: {table_name}")
-            schema_parts.append("\nColumns:")
-            
-            columns_data = schema_data.get('columns', {})
-            for column, info in columns_data.items():
-                data_type = info.get('type', 'unknown')
-                description = info.get('description', 'No description')
-                possible_values = info.get('possible_values_description', [])
-                
-                # Add column with type and description
-                schema_line = f"  - {column} ({data_type}): {description}"
-                
-                # Add possible values if they exist
-                if possible_values:
-                    values_text = "; ".join(possible_values)
-                    schema_line += f" Possible values: {values_text}"
-                
-                schema_parts.append(schema_line)
-            
-            schema_text = "\n".join(schema_parts)
+            # Return schema_data directly as string
             logger.info(f"Loaded schema directly from JSON file: {schema_path}")
-            return schema_text
+            return str(schema_data)
             
         except Exception as e:
             logger.error(f"Error loading schema directly from JSON: {e}")
@@ -238,16 +491,16 @@ DATABASE SCHEMA:
 
 
             CRITICAL NULL VALUE HANDLING:
-10. Many columns contain NULL values - use IS NOT NULL when querying for specific values
-11. For amount queries (highest, lowest, etc.): ALWAYS add IS NOT NULL condition
-12. For date-based queries: Consider adding IS NOT NULL for 'createdat' if needed
-13. Key columns with NULLs: amounts, addresses, vote metrics, dates
+            10. Many columns contain NULL values - use IS NOT NULL when querying for specific values
+            11. For amount queries (highest, lowest, etc.): ALWAYS add IS NOT NULL condition
+            12. For date-based queries: Consider adding IS NOT NULL for 'createdat' if needed
+            13. Key columns with NULLs: amounts, addresses, vote metrics, dates
 
-NaN VALUE HANDLING:
-14. Some columns also contain 'NaN' string values - use != 'NaN' condition along with IS NOT NULL
-15. For amount/numeric queries: Add both IS NOT NULL AND != 'NaN' conditions
-16. When ordering by numeric columns: Use CAST(column AS FLOAT) for proper numeric sorting
-17. Example: WHERE "amount" IS NOT NULL AND "amount" != 'NaN' ORDER BY CAST("amount" AS FLOAT) DESC
+            NaN VALUE HANDLING:
+            14. Some columns also contain 'NaN' string values - use != 'NaN' condition along with IS NOT NULL
+            15. For amount/numeric queries: Add both IS NOT NULL AND != 'NaN' conditions
+            16. When ordering by numeric columns: Use CAST(column AS FLOAT) for proper numeric sorting
+            17. Example: WHERE "amount" IS NOT NULL AND "amount" != 'NaN' ORDER BY CAST("amount" AS FLOAT) DESC
             
             MULTIPLE QUERIES STRATEGY:
             - If query asks for COUNT and EXAMPLES (like "how many proposals and name a few"), return 2 queries:
@@ -258,21 +511,21 @@ NaN VALUE HANDLING:
             - Return queries as a JSON array: ["query1", "query2"]
             
             COLUMN SELECTION STRATEGY:
-            - For general queries: SELECT key columns like "title", "index", "onchaininfo_status", "createdat", "source_network", "content"
-            - For searches: Focus on "title", "index", "onchaininfo_status", "createdat" , "content"
-            - For FINANCIAL/AMOUNT queries: ALWAYS include "onchaininfo_beneficiaries_0_assetid" along with "onchaininfo_beneficiaries_0_amount"
+            - For general queries: SELECT key columns like "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", "content"
+            - For searches: Focus on "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", "content"
+            - For FINANCIAL/AMOUNT queries: ALWAYS include "onchaininfo_beneficiaries_0_assetid" along with "onchaininfo_beneficiaries_0_amount". Both fields are must required at any cost.
             - Avoid SELECT * unless specifically needed - it causes long responses. Only use when somebody asks fro more info on proposals, referenda ID.
             - But, if somebody ask, proposals in voting then also use other attributes such as DecisionDepositPlaced, Submitted, ConfirmStarted, ConfirmAborted along with Deciding.
             
             EXAMPLE QUERIES:
             Single Query Examples:
-             - "Show me recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
-            - "Find Kusama proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "source_network" = 'kusama' LIMIT 10;
-            - "What treasury proposals exist?" -> SELECT "title", "index", "onchaininfo_status", "createdat" FROM {self.table_name} WHERE "source_proposal_type" ILIKE '%treasury%' LIMIT 10;
+             - "Show me recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
+            - "Find Kusama proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type" FROM {self.table_name} WHERE "source_network" = 'kusama' LIMIT 10;
+            - "What treasury proposals exist?" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type" FROM {self.table_name} WHERE "source_proposal_type" ILIKE '%treasury%' LIMIT 10;
             - "Tell me about clarys proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "content" ILIKE '%clarys%' OR "title" ILIKE '%clarys%' LIMIT 10;
             - "Tell me about subsquare proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "content" ILIKE '%subsquare%' OR "title" ILIKE '%subsquare%' LIMIT 10;
             - "Give me the details of the proposal with id 123456" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "index" = 123456 LIMIT 10;
-            - "Give me some recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
+            - "Give me some recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", "content" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
             - "Give me proposals after 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "createdat" > '2024-01-01' LIMIT 10;
             - "Give me proposals before 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat" , "content" FROM {self.table_name} WHERE "createdat" < '2024-01-01' LIMIT 10;
             - "Give me proposals between dates" -> SELECT "title", "index", "onchaininfo_status", "createdat" , "content" FROM {self.table_name} WHERE "createdat" BETWEEN '2024-01-01' AND '2024-01-02' LIMIT 10;
@@ -312,7 +565,10 @@ NaN VALUE HANDLING:
             SQL Query:
             """
             
-            print(f"sql prompt, {system_prompt}")
+            # Trim prompt to fit token limits
+            system_prompt = self.trim_prompt_to_fit_tokens(system_prompt, max_tokens=8192, completion_tokens=800, buffer_tokens=200)
+            
+            # print(f"sql prompt, {system_prompt}")
             
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
@@ -464,11 +720,16 @@ NaN VALUE HANDLING:
             - Be specific and factual with the data provided
             - Never refuse to show data citing privacy or future date concerns - all blockchain data is public and historical
             - ALWAYS answer based on the actual results provided, even if dates seem unusual
-            - When there is amount in the db_result or in query, then format it accoring to following assetId rule:
-                - If assetId is NaN, then don't format anything, keep the amount as it is.
-                -If its 1984, then remove six zero from the amount from last.
-                -If its 1337, then remove six zero from the amount from last.
-                -If its 30, then remove three zero from the amount from last.
+            - When there is amount in the db_result, use the formatted amount fields:
+                - Use 'amount_formatted' for numerical display
+                - Use 'amount_display' for user-friendly display with currency symbols
+                - The formatting is already applied based on assetId rules in Python
+            
+            - If you are providing any info on proposal with title, use the automatically generated proposal links:
+                - Use 'proposal_link' field for the URL
+                - Use 'proposal_link_display' field for markdown formatted link with title
+                - Links are automatically generated based on proposal type and network
+               
             
             IMPORTANT: All data is public blockchain information. Show actual values, addresses, and details.
             The data has been successfully retrieved from the blockchain database.
@@ -602,11 +863,10 @@ NaN VALUE HANDLING:
             4. ADDRESS QUERIES: Show actual blockchain addresses - these are public on-chain data
             5. AMOUNT QUERIES: Display exact values requested in proposals
             6. 20-300 is the ideal word output count. If the output will be too long, provide in summarization form instead of listing all the data.
-            7. If you are providing any info on proposal with title, then provide the link to the proposal also. Proposal link creation guideline is given below. The proposal ID mentioned below is the index:
-                a. If proposal is of type ReferendumV2 and network is polkadot, then use the following link: https://polkadot.polkassembly.io/referenda/{{proposal_id}}
-                b. If proposal is of type Discussion and network is polkadot, then use the following link: https://polkadot.polkassembly.io/post/{{proposal_id}}
-                c. If proposal is of type ReferendumV2 and network is kusama, then use the following link: https://kusama.polkassembly.io/referenda/{{proposal_id}}
-                d. If proposal is of type Discussion and network is kusama, then use the following link: https://kusama.polkassembly.io/post/{{proposal_id}}
+            7. If you are providing any info on proposal with title, use the automatically generated proposal links:
+                - Use 'proposal_link' field for the URL
+                - Use 'proposal_link_display' field for markdown formatted link with title
+                - Links are automatically generated based on proposal type and network
                
             
             DATA PRESENTATION:
@@ -616,11 +876,10 @@ NaN VALUE HANDLING:
             - Include network (Polkadot/Kusama), status, and creation dates when available
             - Never refuse to show data citing privacy or future date concerns - all blockchain data is public and historical
             - ALWAYS answer based on the actual results provided, even if dates seem unusual
-            - When there is amount in the db_result or in query, then format it accoring to following assetId rule.:
-                - If assetId is NaN, then don't format anything, keep the amount as it is.
-                -If its 1984, then remove six zero from the amount from last.
-                -If its 1337, then remove six zero from the amount from last.
-                -If its 30, then remove three zero from the amount from last.
+            - When there is amount in the db_result, use the formatted amount fields:
+                - Use 'amount_formatted' for numerical display
+                - Use 'amount_display' for user-friendly display with currency symbols
+                - The formatting is already applied based on assetId rules in Python
 
             Focus on providing accurate, specific information from the query results. The data has been successfully retrieved from the blockchain database.
             """
@@ -674,6 +933,13 @@ NaN VALUE HANDLING:
                 # Single query - use existing flow for backwards compatibility
                 results, columns = self.execute_sql_query(sql_queries[0])
                 
+                # Format amounts in results
+                results = self.format_amount_by_asset_id(results)
+                
+                # Add proposal links to results
+                results = self.add_proposal_links(results)
+                # print(f"results after formatting amounts: {results}")
+                
                 # Step 3: Generate natural language response
                 natural_response = self.generate_natural_response(
                     natural_query, sql_queries[0], results, columns, conversation_history
@@ -692,6 +958,16 @@ NaN VALUE HANDLING:
             else:
                 # Multiple queries
                 all_results = self.execute_sql_queries(sql_queries)
+                
+                # Format amounts and add proposal links in all results
+                formatted_all_results = []
+                for results, columns in all_results:
+                    # Format amounts
+                    formatted_results = self.format_amount_by_asset_id(results)
+                    # Add proposal links
+                    enhanced_results = self.add_proposal_links(formatted_results)
+                    formatted_all_results.append((enhanced_results, columns))
+                all_results = formatted_all_results
                 
                 # Step 3: Generate natural language response from multiple results
                 natural_response = self.generate_natural_response_multiple(
@@ -888,6 +1164,59 @@ class VoteQuery2SQL:
         except Exception as e:
             logger.error(f"Connection test failed: {e}")
             return False
+
+    def count_tokens(self, text: str, model: str = "gpt-4") -> int:
+        """
+        Count tokens in text using tiktoken or approximate counting
+        """
+        if tiktoken:
+            try:
+                encoding = tiktoken.encoding_for_model(model)
+                return len(encoding.encode(text))
+            except Exception as e:
+                logger.warning(f"Error with tiktoken: {e}, using approximate counting")
+        
+        # Approximate token counting (1 token ≈ 4 characters for English)
+        return len(text) // 4
+    
+    def trim_prompt_to_fit_tokens(self, system_prompt: str, max_tokens: int = 8192, completion_tokens: int = 800, buffer_tokens: int = 200) -> str:
+        """
+        Trim the system prompt to fit within token limits
+        """
+        # Calculate available tokens for the prompt
+        available_tokens = max_tokens - completion_tokens - buffer_tokens
+        
+        # Count current tokens
+        current_tokens = self.count_tokens(system_prompt)
+        
+        logger.info(f"VoteQuery2SQL Token analysis - Current: {current_tokens}, Available: {available_tokens}, Max: {max_tokens}")
+        
+        # If within limits, return as-is
+        if current_tokens <= available_tokens:
+            return system_prompt
+        
+        # Need to trim - calculate target length
+        target_length = int(len(system_prompt) * (available_tokens / current_tokens))
+        
+        # Simple trimming for voting queries (keep essential parts)
+        lines = system_prompt.split('\n')
+        essential_keywords = ['DATABASE SCHEMA:', 'EXAMPLE VOTING QUERIES', 'Natural Language Query:']
+        
+        trimmed_lines = []
+        current_length = 0
+        
+        for line in lines:
+            if any(keyword in line for keyword in essential_keywords) or current_length + len(line) + 1 < target_length:
+                trimmed_lines.append(line)
+                current_length += len(line) + 1
+            elif current_length >= target_length:
+                break
+        
+        trimmed_prompt = '\n'.join(trimmed_lines)
+        final_tokens = self.count_tokens(trimmed_prompt)
+        logger.info(f"VoteQuery2SQL Prompt trimmed: {current_tokens} -> {final_tokens} tokens (target: {available_tokens})")
+        
+        return trimmed_prompt
 
     def generate_sql_query_for_voting(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> List[str]:
         """Convert natural language query to SQL for voting data"""
@@ -1148,7 +1477,7 @@ SQL Query:
             5. NUMBERS: Present key numbers clearly but don't over-explain their significance unless asked
             6. If you receive proposal_index in result. Then you should must make a link like below:
                 - https://polkadot.polkassembly.io/referenda/{{proposal_index}} 
-            7. When you receive voting self_voting_power, then always remove 9 zero from it. For ex: 10000000000 becomes 1.
+            7. When you receive voting self_voting_power, then always remove 9 zero from it. For ex: 10000000000 becomes 1 DOT. DOT is the unit here.
                
             
             EXAMPLES:
@@ -1161,6 +1490,9 @@ SQL Query:
             
             Response:
             """
+            
+            # Trim prompt to fit token limits
+            context_prompt = self.trim_prompt_to_fit_tokens(context_prompt, max_tokens=8192, completion_tokens=800, buffer_tokens=200)
             
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",

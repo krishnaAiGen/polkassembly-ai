@@ -27,6 +27,7 @@ from ..utils.qa_generator import QAGenerator
 from ..guardrail.guardrail import check_with_guardrail_async
 from ..utils.rate_limiter import check_rate_limit, get_client_stats
 from .chunks_reranker import rerank_static_chunks
+from ..utils.slack_bot import SlackBot
 
 # Configure logging
 logging.basicConfig(
@@ -39,12 +40,13 @@ logger = logging.getLogger(__name__)
 static_embedding_manager: Optional[EmbeddingManager] = None
 dynamic_embedding_manager: Optional[EmbeddingManager] = None
 qa_generator: Optional[QAGenerator] = None
+slack_bot: Optional[SlackBot] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
     # Startup
-    global static_embedding_manager, dynamic_embedding_manager, qa_generator
+    global static_embedding_manager, dynamic_embedding_manager, qa_generator, slack_bot
     
     try:
         logger.info("Starting Polkadot AI Chatbot API...")
@@ -97,6 +99,15 @@ async def lifespan(app: FastAPI):
             web_search_context_size=Config.WEB_SEARCH_CONTEXT_SIZE,
             enable_memory=Config.USE_MEM0 and bool(Config.MEM0_API_KEY)  # Enable memory only if USE_MEM0 is true and API key is provided
         )
+        
+        # Initialize Slack bot for error reporting
+        try:
+            logger.info("Initializing Slack bot for error reporting...")
+            slack_bot = SlackBot()
+            logger.info("Slack bot initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Slack bot: {e}. Error reporting to Slack will be disabled.")
+            slack_bot = None
         
         logger.info("API startup completed successfully")
         
@@ -303,13 +314,54 @@ async def query_chatbot(request: QueryRequest):
             )
         
         # Generate answer using QA generator
-        qa_result = await qa_generator.generate_answer(
-            query=request.question,
-            chunks=chunks,
-            custom_prompt=request.custom_prompt,
-            user_id=request.user_id,
-            conversation_history=request.conversation_history
-        )
+        try:
+            qa_result = await qa_generator.generate_answer(
+                query=request.question,
+                chunks=chunks,
+                custom_prompt=request.custom_prompt,
+                user_id=request.user_id,
+                conversation_history=request.conversation_history
+            )
+        except Exception as qa_error:
+            # Log the error locally
+            logger.error(f"Error in qa_generator.generate_answer: {qa_error}")
+            
+            # Send error details to Slack if available
+            if slack_bot:
+                try:
+                    error_context = {
+                        "query": request.question,
+                        "user_id": request.user_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "error_type": "qa_generator_error",
+                        "chunks_count": len(chunks) if chunks else 0
+                    }
+                    slack_bot.post_error_to_slack(
+                        error_message=f"QA Generator Error: {str(qa_error)}",
+                        context=error_context
+                    )
+                except Exception as slack_error:
+                    logger.error(f"Failed to send error to Slack: {slack_error}")
+            
+            # Return user-friendly error response
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            return QueryResponse(
+                answer="I am currently having problems processing your prompt. Try it again in your next prompt.",
+                sources=[],
+                follow_up_questions=[
+                    "How does Polkadot's governance system work?",
+                    "What are the benefits of staking DOT tokens?",
+                    "How do parachains communicate with each other?"
+                ],
+                remaining_requests=remaining_requests,
+                confidence=0.0,
+                context_used=False,
+                model_used=Config.OPENAI_MODEL,
+                chunks_used=len(chunks) if chunks else 0,
+                processing_time_ms=processing_time,
+                timestamp=datetime.now().isoformat(),
+                search_method="qa_generator_error"
+            )
         
         # Format sources if requested
         sources = []
