@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class DataFlattener:
-    def __init__(self, data_dir: str, openai_api_key: str = None):
+    def __init__(self, data_dir: str, output_data_dir: str = None, openai_api_key: str = None):
         self.data_dir = Path(data_dir)
         self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
         
@@ -33,9 +33,14 @@ class DataFlattener:
             self.openai_client = None
             logger.warning("No OpenAI API key provided. Metadata generation will be limited.")
         
-        # Create output directories - CSV files go to structured_data/data
-        self.csv_dir = Path(__file__).parent.parent / "data" / "csv_files"
-        self.metadata_dir = Path(__file__).parent.parent / "data" / "metadata"
+        if output_data_dir:
+            output_path = Path(output_data_dir)
+        else:
+            output_path = Path(__file__).parent.parent / "data"
+        
+        # Create output directories - CSV files go to all_csv subdirectory
+        self.csv_dir = output_path / "all_csv"
+        self.metadata_dir = output_path / "metadata"
         self.csv_dir.mkdir(exist_ok=True, parents=True)
         self.metadata_dir.mkdir(exist_ok=True, parents=True)
     
@@ -555,7 +560,10 @@ class DataFlattener:
     
     def process_all_files(self) -> Dict[str, Any]:
         """Process all JSON files in the directory"""
+        print(f"DEBUG: Looking for JSON files in: {self.data_dir}")
+        print(f"DEBUG: Directory exists: {self.data_dir.exists()}")
         json_files = list(self.data_dir.glob("*.json"))
+        print(f"DEBUG: Found JSON files: {[f.name for f in json_files[:5]]}")  # Show first 5
         logger.info(f"Found {len(json_files)} JSON files to process")
         
         results = {
@@ -593,15 +601,23 @@ class DataFlattener:
 
 def main():
     """Main execution function"""
-    # Configuration - JSON files are in the parent onchain_data directory
-    data_directory = Path(__file__).parent.parent.parent / "onchain_data"
+    # Configuration - JSON files are in the data/onchain_data directory
+    data_directory = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/onchain_data")
     openai_api_key = os.getenv('OPENAI_API_KEY')  # Set this in your environment
     
     if not openai_api_key:
         logger.warning("OPENAI_API_KEY not set. Using basic metadata generation.")
     
+    # Debug: Print path information
+    print(f"Data directory: {data_directory}")
+    print(f"Data directory exists: {data_directory.exists()}")
+    print(f"Data directory absolute: {data_directory.resolve()}")
+    
+    # Set output directory for CSV files
+    output_directory = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull"
+    
     # Initialize flattener
-    flattener = DataFlattener(str(data_directory), openai_api_key)
+    flattener = DataFlattener(str(data_directory), output_data_dir=output_directory, openai_api_key=openai_api_key)
     
     # Process all files
     results = flattener.process_all_files()

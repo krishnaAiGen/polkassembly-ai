@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -22,11 +22,13 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from .config import Config
+from .auth import authenticate_request, get_auth_status
 from ..utils.embeddings import EmbeddingManager
 from ..utils.qa_generator import QAGenerator
-from ..guardrail.content_guardrails import get_guardrails
+from ..guardrail.guardrail import check_with_guardrail_async
 from ..utils.rate_limiter import check_rate_limit, get_client_stats
 from .chunks_reranker import rerank_static_chunks
+from ..utils.slack_bot import SlackBot
 
 # Configure logging
 logging.basicConfig(
@@ -39,13 +41,13 @@ logger = logging.getLogger(__name__)
 static_embedding_manager: Optional[EmbeddingManager] = None
 dynamic_embedding_manager: Optional[EmbeddingManager] = None
 qa_generator: Optional[QAGenerator] = None
-content_guardrails = None
+slack_bot: Optional[SlackBot] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
     # Startup
-    global static_embedding_manager, dynamic_embedding_manager, qa_generator, content_guardrails
+    global static_embedding_manager, dynamic_embedding_manager, qa_generator, slack_bot
     
     try:
         logger.info("Starting Polkadot AI Chatbot API...")
@@ -54,9 +56,8 @@ async def lifespan(app: FastAPI):
         Config.validate_config()
         logger.info("Configuration validated")
         
-        # Initialize enhanced content guardrails
-        content_guardrails = get_guardrails(Config.OPENAI_API_KEY)
-        logger.info("Enhanced AI-powered content guardrails initialized")
+        # Content guardrails now handled by Bedrock guardrails in the query endpoint
+        logger.info("Bedrock guardrails will be used for content moderation")
         
         # Initialize static embedding manager
         logger.info("Initializing static embedding manager...")
@@ -99,6 +100,15 @@ async def lifespan(app: FastAPI):
             web_search_context_size=Config.WEB_SEARCH_CONTEXT_SIZE,
             enable_memory=Config.USE_MEM0 and bool(Config.MEM0_API_KEY)  # Enable memory only if USE_MEM0 is true and API key is provided
         )
+        
+        # Initialize Slack bot for error reporting
+        try:
+            logger.info("Initializing Slack bot for error reporting...")
+            slack_bot = SlackBot()
+            logger.info("Slack bot initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Slack bot: {e}. Error reporting to Slack will be disabled.")
+            slack_bot = None
         
         logger.info("API startup completed successfully")
         
@@ -189,7 +199,7 @@ class SearchResponse(BaseModel):
 
 
 @app.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(authenticated: bool = Depends(authenticate_request)):
     """Health check endpoint"""
     try:
         if not static_embedding_manager or not dynamic_embedding_manager:
@@ -207,12 +217,12 @@ async def health_check():
         raise HTTPException(status_code=503, detail=str(e))
 
 @app.post("/query", response_model=QueryResponse)
-async def query_chatbot(request: QueryRequest):
+async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(authenticate_request)):
     """Main chatbot query endpoint with enhanced guardrails and rate limiting"""
     start_time = datetime.now()
     
     try:
-        if not static_embedding_manager or not dynamic_embedding_manager or not qa_generator or not content_guardrails:
+        if not static_embedding_manager or not dynamic_embedding_manager or not qa_generator:
             raise HTTPException(status_code=503, detail="Service not initialized")
         
         if not static_embedding_manager.collection_exists() and not dynamic_embedding_manager.collection_exists():
@@ -229,31 +239,33 @@ async def query_chatbot(request: QueryRequest):
                 detail="Rate limit exceeded. Please try again later."
             )
         
-        # 🛡️ AI-powered content moderation
-        # is_safe, category, helpful_response = content_guardrails.moderate_content(request.question)
-        
-        
-        # if not is_safe:
-        #     logger.warning(f"Unsafe query blocked - Category: {category}")
-        #     return QueryResponse(
-        #         answer=helpful_response,
-        #         sources=[],
-        #         follow_up_questions=[
-        #             "How does Polkadot's governance system work?",
-        #             "What are the benefits of staking DOT tokens?",
-        #             "How do parachains communicate with each other?"
-        #         ],
-        #         remaining_requests=remaining_requests,
-        #         confidence=0.0,
-        #         context_used=False,
-        #         model_used=Config.OPENAI_MODEL,
-        #         chunks_used=0,
-        #         processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
-        #         timestamp=datetime.now().isoformat(),
-        #         search_method=f"blocked_{category}"
-        #     )
-        
+        # 🛡️ Bedrock Guardrail content moderation
         logger.info(f"Processing query from user {request.user_id}: '{request.question[:50]}...' (remaining: {remaining_requests})")
+        
+        guardrail_result = await check_with_guardrail_async(request.question)
+        
+        if guardrail_result["status"] == "blocked":
+            logger.warning(f"Query blocked by guardrail for user {request.user_id} from IP {request.client_ip}: {guardrail_result['reason']}")
+            return QueryResponse(
+                answer="This query violates our terms of service. Continued violations may result in your IP being blocked.",
+                sources=[],
+                follow_up_questions=[
+                    "How does Polkadot's governance system work?",
+                    "What are the benefits of staking DOT tokens?",
+                    "How do parachains communicate with each other?"
+                ],
+                remaining_requests=remaining_requests,
+                confidence=0.0,
+                context_used=False,
+                model_used="guardrail",
+                chunks_used=0,
+                processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
+                timestamp=datetime.now().isoformat(),
+                search_method="guardrail_blocked"
+            )
+        elif guardrail_result["status"] == "error":
+            logger.error(f"Guardrail error for user {request.user_id}: {guardrail_result['reason']}")
+            # Continue processing if guardrail fails - don't block legitimate queries due to technical issues
         
         # Search for relevant chunks in both collections
         static_chunks = static_embedding_manager.search_similar_chunks(
@@ -303,13 +315,54 @@ async def query_chatbot(request: QueryRequest):
             )
         
         # Generate answer using QA generator
-        qa_result = await qa_generator.generate_answer(
-            query=request.question,
-            chunks=chunks,
-            custom_prompt=request.custom_prompt,
-            user_id=request.user_id,
-            conversation_history=request.conversation_history
-        )
+        try:
+            qa_result = await qa_generator.generate_answer(
+                query=request.question,
+                chunks=chunks,
+                custom_prompt=request.custom_prompt,
+                user_id=request.user_id,
+                conversation_history=request.conversation_history
+            )
+        except Exception as qa_error:
+            # Log the error locally
+            logger.error(f"Error in qa_generator.generate_answer: {qa_error}")
+            
+            # Send error details to Slack if available
+            if slack_bot:
+                try:
+                    error_context = {
+                        "query": request.question,
+                        "user_id": request.user_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "error_type": "qa_generator_error",
+                        "chunks_count": len(chunks) if chunks else 0
+                    }
+                    slack_bot.post_error_to_slack(
+                        error_message=f"QA Generator Error: {str(qa_error)}",
+                        context=error_context
+                    )
+                except Exception as slack_error:
+                    logger.error(f"Failed to send error to Slack: {slack_error}")
+            
+            # Return user-friendly error response
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            return QueryResponse(
+                answer="I am currently having problems processing your prompt. Try it again in your next prompt.",
+                sources=[],
+                follow_up_questions=[
+                    "How does Polkadot's governance system work?",
+                    "What are the benefits of staking DOT tokens?",
+                    "How do parachains communicate with each other?"
+                ],
+                remaining_requests=remaining_requests,
+                confidence=0.0,
+                context_used=False,
+                model_used=Config.OPENAI_MODEL,
+                chunks_used=len(chunks) if chunks else 0,
+                processing_time_ms=processing_time,
+                timestamp=datetime.now().isoformat(),
+                search_method="qa_generator_error"
+            )
         
         # Format sources if requested
         sources = []
@@ -371,7 +424,7 @@ async def query_chatbot(request: QueryRequest):
         )
 
 @app.post("/search", response_model=SearchResponse)
-async def search_documents(request: SearchRequest):
+async def search_documents(request: SearchRequest, authenticated: bool = Depends(authenticate_request)):
     """Search for relevant document chunks"""
     start_time = datetime.now()
     
@@ -430,7 +483,7 @@ async def search_documents(request: SearchRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/stats")
-async def get_collection_stats():
+async def get_collection_stats(authenticated: bool = Depends(authenticate_request)):
     """Get collection statistics"""
     try:
         if not static_embedding_manager or not dynamic_embedding_manager:
@@ -447,7 +500,7 @@ async def get_collection_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/rate-limit/{user_id}")
-async def get_rate_limit_status(user_id: str):
+async def get_rate_limit_status(user_id: str, authenticated: bool = Depends(authenticate_request)):
     """Get rate limit status for a user"""
     try:
         stats = get_client_stats(user_id)
@@ -461,21 +514,38 @@ async def get_rate_limit_status(user_id: str):
         logger.error(f"Error getting rate limit stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/auth-status")
+async def get_authentication_status():
+    """Get authentication configuration status (public endpoint)"""
+    return get_auth_status()
+
 @app.get("/")
 async def root():
-    """Root endpoint with API information"""
-    return {
+    """Root endpoint with API information (public endpoint)"""
+    auth_info = get_auth_status()
+    
+    base_info = {
         "message": "Polkadot AI Chatbot API",
         "version": "1.0.0",
         "docs": "/docs",
         "health": "/health",
+        "authentication": auth_info,
         "endpoints": {
             "query": "POST /query - Ask questions about Polkadot",
-            "search": "POST /search - Search document chunks",
+            "search": "POST /search - Search document chunks", 
             "stats": "GET /stats - Get collection statistics",
-            "health": "GET /health - Health check"
+            "health": "GET /health - Health check",
+            "rate-limit": "GET /rate-limit/{user_id} - Get rate limit status",
+            "auth-status": "GET /auth-status - Get authentication status"
         }
     }
+    
+    if auth_info["authentication_enabled"]:
+        base_info["authentication_required"] = True
+        base_info["auth_header_example"] = auth_info["auth_header_format"]
+        base_info["note"] = "All endpoints except / and /auth-status require authentication"
+    
+    return base_info
 
 if __name__ == "__main__":
     import uvicorn

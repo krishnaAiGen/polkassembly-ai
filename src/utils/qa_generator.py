@@ -1,5 +1,6 @@
 import openai
 import logging
+import json
 from typing import List, Dict, Any, Optional
 import re
 from .web_search import search_tavily
@@ -12,7 +13,7 @@ import sys
 from datetime import datetime
 
 from .mem0_memory import get_memory_manager, add_user_query, add_assistant_response
-from ..guardrail.content_guardrails import get_guardrails
+# Content guardrails now handled by Bedrock guardrails in the API endpoint
 from .slack_bot import SlackBot
 
 # Import ask_question from the texttosql module
@@ -58,9 +59,8 @@ class QAGenerator:
             logger.info("Continuing without Gemini client (OpenAI only mode)")
             self.gemini_client = None
         
-        # Initialize enhanced guardrails
-        self.guardrails = get_guardrails(openai_api_key)
-        logger.info("Enhanced AI-powered guardrails initialized")
+        # Content guardrails now handled by Bedrock guardrails in the API endpoint
+        logger.info("Content moderation will be handled by Bedrock guardrails")
         
         # Initialize memory manager
         self.memory_manager = get_memory_manager() if enable_memory else None
@@ -220,25 +220,25 @@ class QAGenerator:
                 sources = sources[:np.random.randint(1, 4)]
             else:
                 sources = [
-                {
-                    'title': 'Polkadot Knowledge Base',
-                    'url': 'https://polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                },
-                {
-                    'title': 'Polkadot Wiki',
-                    'url': 'https://wiki.polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                },
-                {
-                    'title': 'Polkadot Documentation',
-                    'url': 'https://docs.polkadot.network',
-                    'source_type': 'web_search',
-                    'similarity_score': 0.9
-                }
-            ]
+                    {
+                        'title': 'Polkadot Knowledge Base',
+                        'url': 'https://polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    },
+                    {
+                        'title': 'Polkadot Wiki',
+                        'url': 'https://wiki.polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    },
+                    {
+                        'title': 'Polkadot Documentation',
+                        'url': 'https://docs.polkadot.network',
+                        'source_type': 'web_search',
+                        'similarity_score': 0.9
+                    }
+                ]
             
             # Generate follow-up questions for web search results
             follow_up_questions = self._get_fallback_follow_ups(query)
@@ -449,91 +449,246 @@ Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposa
     def analyze_query_with_memory(self, query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> str:
         """Analyze query with conversation history to add memory/context awareness"""
         try:
-            # If no conversation history or Gemini client not available, return original query
+            # Early return if no context needed
             if not conversation_history or not self.gemini_client:
                 return query
             
-            # Create prompt for Gemini to analyze query with conversation history
-            analysis_prompt = f"""
-            You are analyzing a user query in the context of previous conversation to determine if the current query needs modification for better understanding.
+            # Optimize: Only use recent conversation history (last 5-10 messages)
+            # This saves tokens and focuses on relevant context
+            max_history_length = 5
+            recent_history = conversation_history[-max_history_length:] if len(conversation_history) > max_history_length else conversation_history
+            
+            # Convert conversation history to serializable format
+            serializable_history = []
+            for msg in recent_history:
+                if hasattr(msg, 'role') and hasattr(msg, 'content'):
+                    serializable_history.append({
+                        "role": msg.role,
+                        "content": msg.content
+                    })
+                elif isinstance(msg, dict):
+                    serializable_history.append({
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content", str(msg))
+                    })
+                else:
+                    serializable_history.append({
+                        "role": "user",
+                        "content": str(msg)
+                    })
+            
+            # Improved prompt with better structure and examples
+            analysis_prompt = f"""You are a query context analyzer. Your job is to rewrite incomplete or contextual queries into complete, standalone queries.
 
-            Previous Conversation History: {conversation_history}
+CONVERSATION HISTORY:
+{self._format_conversation_history(serializable_history)}
+
+CURRENT USER QUERY: "{query}"
+
+INSTRUCTIONS:
+1. If the current query is complete and standalone → return it unchanged
+2. If the query references previous context (e.g., "what about June?", "show recent ones", "their titles too") → rewrite to be complete
+3. Preserve the user's intent and style
+4. Keep technical terms and column names consistent with previous queries
+
+EXAMPLES:
+
+Example 1:
+Previous: "Give me total number of referendums in July 2025"
+Current: "what about June?"
+Output: "Give me total number of referendums in June 2025"
+
+Example 2:
+Previous: "Show top 10 proposals by vote count"
+Current: "include their titles too"
+Output: "Show top 10 proposals with their titles by vote count"
+
+Example 3:
+Previous: "List all treasury proposals"
+Current: "filter for amount > 1000"
+Output: "List all treasury proposals with amount > 1000"
+
+Example 4:
+Current: "Show me all active referendums"
+Output: "Show me all active referendums" (unchanged - already complete)
+
+RESPONSE FORMAT:
+Return ONLY a JSON object with this exact structure:
+{{"analyzed_query": "your rewritten query here"}}
+
+No explanations, no markdown, just the JSON."""
+
+            # Get analysis from Gemini with retry logic
+            gemini_response = self._get_gemini_response_with_retry(analysis_prompt)
             
-            Current User Query: {query}
+            # Parse response with better error handling
+            analyzed_query = self._parse_gemini_response(gemini_response, query)
             
-            Instructions:
-            1. Analyze if the current query relates to or references anything from the previous conversation
-            2. If the query is a follow-up question that needs context from previous conversation, modify it to be more complete and standalone
-            3. If the query is independent and doesn't need previous context, keep it exactly the same
-            4. Only modify the query if it's clearly a follow-up that would be unclear without context
+            # Validation: ensure analyzed query is not empty or just whitespace
+            if not analyzed_query or analyzed_query.strip() == "":
+                logger.warning("Analyzed query is empty, returning original")
+                return query
             
-            Examples:
-            - If previous conversation was about "treasury proposals" and current query is "show me the recent ones", modify to "show me the recent treasury proposals"
-            - If previous conversation was about "Polkadot governance" and current query is "what about Kusama?", modify to "what about Kusama governance?"
-            - If current query is complete and standalone like "show me all referendums", keep it the same
+            # Log only if query was actually modified
+            if analyzed_query.lower().strip() != query.lower().strip():
+                logger.info(f"Query modified: '{query}' → '{analyzed_query}'")
             
-            Return only the final query (either original or modified). Do not include any explanations or additional text.
-            """
-            
-            # Get analysis from Gemini
-            analyzed_query = self.gemini_client.get_response(analysis_prompt)
-            
-            # Clean up the response (remove any extra formatting)
-            analyzed_query = analyzed_query.strip().strip('"').strip("'")
-            
-            logger.info(f"Query analysis - Original: '{query}' -> Analyzed: '{analyzed_query}'")
             return analyzed_query
             
         except Exception as e:
-            logger.error(f"Error in query analysis with memory: {e}")
-            # Return original query if analysis fails
+            logger.error(f"Error in query analysis: {e}", exc_info=True)
             return query
+
+    def _format_conversation_history(self, history: List[Dict[str, Any]]) -> str:
+        """Format conversation history in a readable way"""
+        if not history:
+            return "No previous conversation"
+        
+        formatted = []
+        for i, msg in enumerate(history, 1):
+            role = msg.get("role", "user").capitalize()
+            content = msg.get("content", "")
+            # Truncate very long messages
+            if len(content) > 200:
+                content = content[:200] + "..."
+            formatted.append(f"{i}. {role}: {content}")
+        
+        return "\n".join(formatted)
+
+    def _get_gemini_response_with_retry(self, prompt: str, max_retries: int = 2) -> str:
+        """Get response from Gemini with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                response = self.gemini_client.get_response(prompt)
+                if response and response.strip():
+                    return response
+            except Exception as e:
+                logger.warning(f"Gemini API attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(1)  # Brief pause before retry
+        
+        raise Exception("All Gemini API attempts failed")
+
+    def _parse_gemini_response(self, response: str, fallback_query: str) -> str:
+        """Parse Gemini JSON response with multiple fallback strategies"""
+        try:
+            # Strategy 1: Direct JSON parse
+            response_json = json.loads(response.strip())
+            return response_json.get("analyzed_query", fallback_query)
+        
+        except json.JSONDecodeError:
+            # Strategy 2: Extract JSON from markdown code blocks
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
+            if json_match:
+                try:
+                    response_json = json.loads(json_match.group(1))
+                    return response_json.get("analyzed_query", fallback_query)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Strategy 3: Find JSON object in text
+            json_match = re.search(r'\{[^}]*"analyzed_query"[^}]*\}', response, re.DOTALL)
+            if json_match:
+                try:
+                    response_json = json.loads(json_match.group(0))
+                    return response_json.get("analyzed_query", fallback_query)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Strategy 4: Extract quoted text after "analyzed_query"
+            quote_match = re.search(r'analyzed_query["\s:]+(["\'])(.*?)\1', response, re.DOTALL)
+            if quote_match:
+                return quote_match.group(2).strip()
+            
+            # Final fallback: log and return original
+            logger.warning(f"Could not parse Gemini response: {response[:200]}")
+            return fallback_query
 
     def route_query(self, query):
         """
         Route query to appropriate data source using Gemini AI analysis.
-        Returns either "STATIC" or "ONCHAIN".
+        Returns a dictionary with data_source and table (if applicable).
         """
         import json
         
         # Prompt for Gemini to analyze the query
         analysis_prompt = f"""
-Analyze this user query and determine which data source it should use:
+            Analyze this user query and determine which data source and table it should use:
 
-Query: "{query}"
+            Query: "{query}"
 
-Data Sources:
-1. STATIC - For general topics like:
-   - Governance/OpenGov concepts
-   - Ambassador Programme info  
-   - Parachains & AnV explanations
-   - Hyperbridge, JAM definitions
-   - Dashboard info (Frequency, People, Stellaswap)
-   - Wiki pages, how-to guides
+            Data Sources:
+            
+            1. STATIC - For general educational/informational topics:
+            - Governance/OpenGov concepts and explanations
+            - Ambassador Programme information  
+            - Parachains & AnV explanations
+            - Hyperbridge, JAM definitions
+            - Dashboard information (Frequency, People, Stellaswap)
+            - Wiki pages, how-to guides, tutorials
+            - General "what is" or "how does" questions without specific data requests
 
-2. ONCHAIN - 
--Show me recent proposals
--Find Kusama proposals
--What treasury proposals exist?
--Tell me about clarys proposal
--Tell me about subsquare proposal
--Give me the details of the proposal with id 123456
--Give me some recent proposals
--Give me proposals after 2024-01-01
--Give me proposals before 2024-01-01
--Give me proposals between dates
--Count total proposals
--Show me proposal amounts
+            2. ONCHAIN - For blockchain data queries. Choose the appropriate table:
+            
+            a) Table: "governance_data" - Use when query involves:
+                - Proposal information (title, content, description, hash)
+                - Proposal metadata (status, type, dates, network)
+                - Proposer addresses and beneficiaries
+                - Financial amounts (rewards, transfers, beneficiary amounts)
+                - Proposal metrics (likes, dislikes, comments)
+                - Voting decisions on proposals(Aye/Nay/Abstain)
+                - Proposal filtering by:
+                    * Index/ID numbers (e.g., "proposal 1679", "referendum 234")
+                    * Dates (created, updated, before/after/between dates)
+                    * Network (Kusama/Polkadot)
+                    * Type (ReferendumV2, Bounty, Treasury, etc.)
+                    * Status (Executed, Rejected, Deciding, etc.)
+                    * Data source (subsquare/polkassembly)
+                - Proposal counts, aggregations, or summaries
+                - Keywords: "proposal", "referendum", "bounty", "treasury", "motion"
+                
+                Examples:
+                - "Show me recent proposals"
+                - "Find proposals with amount > 10000 DOT"
+                - "What's the status of proposal 1679?"
+                - "Count rejected proposals in 2024"
+                - "Show treasury proposals by address X"
+                - "List proposals about topic Y"
 
-Instructions:
-- Onchain data contains blockchain onchain data. If user is asking about onchain data which is given in example above, use ONCHAIN
-- For general concepts/explanations without specific IDs, use STATIC
+            b) Table: "voting_data" - Use when query involves:
+                - Voter information and voter accounts
+                - Vote delegation (delegated votes, delegation chains)
+                - Voting power or locked amounts
+                - Lock periods or conviction voting
+                - Vote timestamps (created_at, removed_at)
+                - Voter counts or voting statistics
+                - Voting patterns or behavior analysis
+                - Keywords: "voter", "vote", "voting", "delegat", "conviction", "lock period"
+                
+                Examples:
+                - "How many voters participated in proposal 123?"
+                - "Show me votes with >1000 DOT voting power"
+                - "Count total voters in July 2024"
+                - "Who voted Aye on referendum 456?"
+                - "List delegated votes for proposal X"
+                - "What was voter Y's decision on proposal Z?"
+                - "Show me votes with 6x conviction"
 
-Respond ONLY with valid JSON in this exact format:
-{{
-  "data_source": "STATIC" or "ONCHAIN"
-}}
-"""
+            Decision Logic:
+            - If query asks about VOTER behavior, decisions, or participation → "voting_data"
+            - If query asks about PROPOSAL details, status, or metadata → "governance_data"
+            - If query is conceptual/educational without specific data requests → "STATIC"
+            - If query mentions both proposals AND voters, prioritize based on main intent:
+            * Main focus on "how people voted" → "voting_data"
+            * Main focus on "proposal details" → "governance_data"
+
+            Respond ONLY with valid JSON in this exact format:
+            {{
+                "data_source": "STATIC" or "ONCHAIN",
+                "table": "governance_data" or "voting_data" (only if data_source is ONCHAIN, otherwise null)
+            }}
+        """
 
         try:
             # Use Gemini to analyze the query
@@ -543,22 +698,45 @@ Respond ONLY with valid JSON in this exact format:
                 # Try to parse JSON response
                 try:
                     result = json.loads(response.strip())
-                    return result.get('data_source', 'STATIC')
+                    data_source = result.get('data_source', 'STATIC')
+                    table = result.get('table', None)
+                    
+                    return {
+                        'data_source': data_source,
+                        'table': table if data_source == 'ONCHAIN' else None
+                    }
                     
                 except json.JSONDecodeError:
                     # If JSON parsing fails, extract from response text
                     if "onchain" in response.lower():
-                        return "ONCHAIN"
+                        # Try to determine table from response content
+                        if "voting" in response.lower() or "voter" in response.lower():
+                            table = "voting_data"
+                        else:
+                            table = "governance_data"
+                        return {
+                            'data_source': 'ONCHAIN',
+                            'table': table
+                        }
                     else:
-                        return "STATIC"
+                        return {
+                            'data_source': 'STATIC',
+                            'table': None
+                        }
             else:
                 # Fallback if no Gemini client
-                return "STATIC"
+                return {
+                    'data_source': 'STATIC',
+                    'table': None
+                }
                 
         except Exception as e:
             logger.error(f"Error in route_query: {e}")
             # Default fallback
-            return "STATIC"
+            return {
+                'data_source': 'STATIC',
+                'table': None
+            }
         
 
     async def generate_answer(self, 
@@ -589,24 +767,6 @@ Respond ONLY with valid JSON in this exact format:
             Dictionary with answer, sources, and metadata
         """
         try:
-            # AI-powered content moderation
-            # is_safe, category, helpful_response = self.guardrails.moderate_content(query)
-            
-            # if not is_safe:
-            #     logger.warning(f"Unsafe query detected - Category: {category}")
-            #     return {
-            #         'answer': helpful_response,
-            #         'sources': [],
-            #         'confidence': 0.0,
-            #         'follow_up_questions': self._get_helpful_follow_ups(),
-            #         'context_used': False,
-            #         'model_used': self.model,
-            #         'chunks_used': 0,
-            #         'search_method': f'blocked_{category}'
-            #     }
-            
-            
-            
             # Check if this is a greeting message
             if self._is_greeting_message(query):
                 logger.info("Detected greeting message, providing Polkassembly introduction")
@@ -626,13 +786,17 @@ Respond ONLY with valid JSON in this exact format:
             # Route query to determine data source
             logger.info(f"Routing query: '{query[:50]}...'")
             route_result = self.route_query(query)
-            logger.info(f"Route result: {route_result}")
+            route_result_data_source = route_result.get('data_source')
+            route_result_table = route_result.get('table')
+            logger.info(f"Route result: {route_result_data_source}")
             
             # Handle dynamic data source (ONCHAIN queries)
-            if route_result == 'ONCHAIN':
+            if route_result_data_source == 'ONCHAIN':
                 try:
                     # Use the ask_question function from query_api with conversation history
-                    sql_result = ask_question(query, conversation_history)
+                    analyzed_query = self.analyze_query_with_memory(query, conversation_history)
+                    logger.info(f"Original Query: {query}, Analyzed query: {analyzed_query}")
+                    sql_result = ask_question(analyzed_query, conversation_history, route_result_table)
                     
                     # Format response to match expected structure
                     return {
@@ -668,8 +832,6 @@ Respond ONLY with valid JSON in this exact format:
                 any(chunk.get('similarity_score', 0) > float(os.getenv("SIMILARITY_THRESHOLD")) for chunk in chunks)
             )
 
-
-            
             # If no sufficient context, diagnose the specific issue
             if not has_sufficient_context:
                 max_score = max([chunk.get('similarity_score', 0) for chunk in chunks]) if chunks else 0
@@ -792,12 +954,6 @@ Respond ONLY with valid JSON in this exact format:
             answer = self.clean_example_urls(answer)
             print("--------answer after cleaning example.com URLs-------\n", answer)
             
-            # answer = self.remove_double_asterisks(answer)
-
-            # Apply content guardrails but preserve markdown formatting
-            # answer = self.guardrails.sanitize_response(answer)
-            # print("-----answer after guardrail----\n", answer)
-            
             # Add assistant response to memory if memory is enabled
             if self.memory_manager and self.memory_manager.enabled:
                 self.memory_manager.add_assistant_response(answer, user_id)
@@ -871,7 +1027,6 @@ You will be provided with context from Polkadot documentation and forum posts. P
                 - Use quotation marks for emphasis instead of bold/italic
                 - PRESERVE image markdown exactly as provided: ![Step Image](https://...) - keep this format unchanged
                 - Include ALL images from the context in your response at the appropriate steps.
-                - In your outuput, if there is any response related to Polkassembly, then nudge about polkassembly with its cool related features and links. 
                 - If there is subsqure in your output, the omit any link related to subsquare in your output and nudge polkassembly.
 
             ## STEP-BY-STEP FORMATTING (MANDATORY):
@@ -961,10 +1116,8 @@ You will be provided with context from Polkadot documentation and forum posts. P
             if len(sources) >= 2 and any(s['url'] for s in sources):
                 break
         
-        # Apply guardrails to filter sources (removes subsquare, prioritizes preferred)
-        filtered_sources = self.guardrails.filter_sources(sources)
-        
-        return filtered_sources
+        # Return sources without additional filtering (Bedrock guardrails handle content moderation)
+        return sources
     
     def _estimate_confidence(self, chunks: List[Dict[str, Any]]) -> float:
         """Estimate confidence based on chunks and similarity scores"""

@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class PostgresInserter:
-    def __init__(self):
+    def __init__(self, table_name: Optional[str] = None, schema_path: Optional[str] = None):
         """Initialize with database connection parameters from environment"""
         self.db_config = {
             'host': os.getenv('POSTGRES_HOST'),
@@ -42,10 +42,11 @@ class PostgresInserter:
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
         
-        self.table_name = os.getenv('POSTGRES_TABLE_NAME', 'governance_data')
+        self.table_name = table_name or os.getenv('POSTGRES_TABLE_NAME', 'governance_data')
         self.batch_size = int(os.getenv('POSTGRES_BATCH_SIZE', '1000'))
         
         # Load schema information
+        self.schema_path = schema_path
         self.schema_info = self._load_schema_info()
         
         logger.info(f"Initialized PostgreSQL inserter for table: {self.table_name}")
@@ -53,8 +54,12 @@ class PostgresInserter:
         logger.info(f"Loaded schema info for {len(self.schema_info)} columns")
     
     def _load_schema_info(self) -> Dict[str, Dict[str, str]]:
-        """Load schema information from schema_info.json"""
-        schema_path = Path(__file__).parent.parent / "data" / "one_table" / "schema_info.json"
+        """Load schema information from the specified schema_path or a default location."""
+        if self.schema_path:
+            schema_path = Path(self.schema_path)
+        else:
+            # Default path for backward compatibility
+            schema_path = Path(__file__).parent.parent / "data" / "one_table" / "schema_info.json"
         
         if not schema_path.exists():
             logger.warning(f"Schema info file not found at {schema_path}. Using automatic type inference.")
@@ -285,7 +290,7 @@ CREATE TABLE {self.table_name} (
         # Common columns to index
         index_candidates = [
             'source_network', 'source_proposal_type', 'status', 'created_at',
-            'updated_at', 'id', 'proposal_hash', 'network'
+            'updated_at', 'id', 'proposal_hash', 'network', 'row_index'
         ]
         
         for col in index_candidates:
@@ -522,38 +527,37 @@ CREATE TABLE {self.table_name} (
         
         return series.apply(parse_boolean)
     
-    def get_table_stats(self) -> Dict[str, Any]:
-        """Get statistics about the inserted data"""
+    def get_table_stats(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Get statistics about the inserted data, if relevant columns exist."""
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
+                    stats = {}
                     # Basic stats
                     cur.execute(f"SELECT COUNT(*) FROM {self.table_name};")
-                    total_rows = cur.fetchone()[0]
+                    stats['total_rows'] = cur.fetchone()[0]
                     
-                    # Network distribution
-                    cur.execute(f"""
-                        SELECT source_network, COUNT(*) as count 
-                        FROM {self.table_name} 
-                        GROUP BY source_network 
-                        ORDER BY count DESC;
-                    """)
-                    network_stats = dict(cur.fetchall())
+                    # Network distribution (if column exists)
+                    if 'source_network' in analysis['columns']:
+                        cur.execute(f"""
+                            SELECT source_network, COUNT(*) as count 
+                            FROM {self.table_name} 
+                            GROUP BY source_network 
+                            ORDER BY count DESC;
+                        """)
+                        stats['network_distribution'] = dict(cur.fetchall())
                     
-                    # Proposal type distribution
-                    cur.execute(f"""
-                        SELECT source_proposal_type, COUNT(*) as count 
-                        FROM {self.table_name} 
-                        GROUP BY source_proposal_type 
-                        ORDER BY count DESC;
-                    """)
-                    proposal_stats = dict(cur.fetchall())
-                    
-                    return {
-                        'total_rows': total_rows,
-                        'network_distribution': network_stats,
-                        'proposal_type_distribution': proposal_stats
-                    }
+                    # Proposal type distribution (if column exists)
+                    if 'source_proposal_type' in analysis['columns']:
+                        cur.execute(f"""
+                            SELECT source_proposal_type, COUNT(*) as count 
+                            FROM {self.table_name} 
+                            GROUP BY source_proposal_type 
+                            ORDER BY count DESC;
+                        """)
+                        stats['proposal_type_distribution'] = dict(cur.fetchall())
+
+                    return stats
                     
         except Exception as e:
             logger.error(f"Error getting table stats: {e}")
@@ -583,13 +587,15 @@ CREATE TABLE {self.table_name} (
                 return False
             
             # Get final stats
-            stats = self.get_table_stats()
+            stats = self.get_table_stats(analysis)
             if stats:
                 logger.info("Import completed successfully!")
                 logger.info(f"Final statistics:")
-                logger.info(f"  Total rows: {stats['total_rows']:,}")
-                logger.info(f"  Networks: {stats['network_distribution']}")
-                logger.info(f"  Proposal types: {len(stats['proposal_type_distribution'])}")
+                logger.info(f"  Total rows: {stats.get('total_rows', 'N/A')}")
+                if 'network_distribution' in stats:
+                    logger.info(f"  Networks: {stats['network_distribution']}")
+                if 'proposal_type_distribution' in stats:
+                    logger.info(f"  Proposal types: {len(stats['proposal_type_distribution'])}")
             
             return True
             
@@ -599,12 +605,12 @@ CREATE TABLE {self.table_name} (
 
 def main():
     """Main execution function"""
-    # Path to the combined CSV file
-    csv_file = Path(__file__).parent.parent / "data" / "one_table" / "combined_governance_data.csv"
+    # Path to the specific CSV file to insert
+    csv_file = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/one_table/filter_data/governance_data_86.csv")
     
     if not csv_file.exists():
-        logger.error(f"Combined CSV file not found at: {csv_file}")
-        logger.error("Please run create_one_table.py first to generate the combined CSV.")
+        logger.error(f"CSV file not found at: {csv_file}")
+        logger.error("Please ensure the governance_data_86.csv file exists in the specified location.")
         return
     
     try:

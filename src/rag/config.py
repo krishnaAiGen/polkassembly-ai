@@ -65,11 +65,18 @@ class Config:
     MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", 500))
     ENABLE_OFFENSIVE_FILTER = os.getenv("ENABLE_OFFENSIVE_FILTER", "true").lower() == "true"
     
+    # Authentication Configuration
+    POLKASSEMBLY_AI_TOKEN = os.getenv("POLKASSEMBLY_AI_TOKEN", "")
+    ENABLE_AUTHENTICATION = os.getenv("ENABLE_AUTHENTICATION", "true").lower() == "true"
+    
     @classmethod
     def validate_config(cls):
         """Validate that required configuration is present"""
         if not cls.OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY must be set in environment variables")
+        
+        if cls.ENABLE_AUTHENTICATION and not cls.POLKASSEMBLY_AI_TOKEN:
+            raise ValueError("POLKASSEMBLY_AI_TOKEN must be set when authentication is enabled")
         
         if not os.path.exists(cls.DATA_SOURCES_PATH):
             raise ValueError(f"Data sources path does not exist: {cls.DATA_SOURCES_PATH}")
