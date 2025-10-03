@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -22,6 +22,7 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from .config import Config
+from .auth import authenticate_request, get_auth_status
 from ..utils.embeddings import EmbeddingManager
 from ..utils.qa_generator import QAGenerator
 from ..guardrail.guardrail import check_with_guardrail_async
@@ -198,7 +199,7 @@ class SearchResponse(BaseModel):
 
 
 @app.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(authenticated: bool = Depends(authenticate_request)):
     """Health check endpoint"""
     try:
         if not static_embedding_manager or not dynamic_embedding_manager:
@@ -216,7 +217,7 @@ async def health_check():
         raise HTTPException(status_code=503, detail=str(e))
 
 @app.post("/query", response_model=QueryResponse)
-async def query_chatbot(request: QueryRequest):
+async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(authenticate_request)):
     """Main chatbot query endpoint with enhanced guardrails and rate limiting"""
     start_time = datetime.now()
     
@@ -423,7 +424,7 @@ async def query_chatbot(request: QueryRequest):
         )
 
 @app.post("/search", response_model=SearchResponse)
-async def search_documents(request: SearchRequest):
+async def search_documents(request: SearchRequest, authenticated: bool = Depends(authenticate_request)):
     """Search for relevant document chunks"""
     start_time = datetime.now()
     
@@ -482,7 +483,7 @@ async def search_documents(request: SearchRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/stats")
-async def get_collection_stats():
+async def get_collection_stats(authenticated: bool = Depends(authenticate_request)):
     """Get collection statistics"""
     try:
         if not static_embedding_manager or not dynamic_embedding_manager:
@@ -499,7 +500,7 @@ async def get_collection_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/rate-limit/{user_id}")
-async def get_rate_limit_status(user_id: str):
+async def get_rate_limit_status(user_id: str, authenticated: bool = Depends(authenticate_request)):
     """Get rate limit status for a user"""
     try:
         stats = get_client_stats(user_id)
@@ -513,21 +514,38 @@ async def get_rate_limit_status(user_id: str):
         logger.error(f"Error getting rate limit stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/auth-status")
+async def get_authentication_status():
+    """Get authentication configuration status (public endpoint)"""
+    return get_auth_status()
+
 @app.get("/")
 async def root():
-    """Root endpoint with API information"""
-    return {
+    """Root endpoint with API information (public endpoint)"""
+    auth_info = get_auth_status()
+    
+    base_info = {
         "message": "Polkadot AI Chatbot API",
         "version": "1.0.0",
         "docs": "/docs",
         "health": "/health",
+        "authentication": auth_info,
         "endpoints": {
             "query": "POST /query - Ask questions about Polkadot",
-            "search": "POST /search - Search document chunks",
+            "search": "POST /search - Search document chunks", 
             "stats": "GET /stats - Get collection statistics",
-            "health": "GET /health - Health check"
+            "health": "GET /health - Health check",
+            "rate-limit": "GET /rate-limit/{user_id} - Get rate limit status",
+            "auth-status": "GET /auth-status - Get authentication status"
         }
     }
+    
+    if auth_info["authentication_enabled"]:
+        base_info["authentication_required"] = True
+        base_info["auth_header_example"] = auth_info["auth_header_format"]
+        base_info["note"] = "All endpoints except / and /auth-status require authentication"
+    
+    return base_info
 
 if __name__ == "__main__":
     import uvicorn
