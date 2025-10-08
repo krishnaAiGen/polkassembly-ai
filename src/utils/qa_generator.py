@@ -312,35 +312,40 @@ class QAGenerator:
         Returns:
             Dictionary with introduction answer and metadata
         """
-        introduction = """Hello! I'm the **Polkassembly AI Assistant**! 👋
+        introduction = """Hello! I'm **Klara** 👋 – your AI-powered governance assistant for **Polkadot** and **Kusama**!
 
-**Polkassembly** is the leading governance platform for **Polkadot** and **Kusama** ecosystems, designed to make blockchain governance accessible and transparent.
+I'm here to help you explore the governance ecosystem through **Polkassembly**, making it easy to query on-chain data, analyze proposals, and understand the voting process—all in natural language.
 
-**Key Features:**
+**What I can help you with:**
 
-- **Governance Tracking** - Monitor proposals, referenda, and voting activity
+🗳 **Governance Data** - Query proposals, referenda, bounties, and treasury activities
 
-- **Democracy Tools** - Participate in on-chain governance decisions with easy voting interfaces
+📊 **Voting Analysis** - Track voter behavior, delegation, and voting power
 
-- **Analytics Dashboard** - View comprehensive governance analytics and voting patterns
+💰 **Treasury Insights** - Explore funding proposals and beneficiary data
 
-- **Community Hub** - Discuss proposals and engage with other community members
+🧭 **Platform Guidance** - Learn how to use Polkassembly features and OpenGov
+
+**Who I'm built for:**
+
+- Community members exploring proposals
+- Delegates analyzing voting patterns  
+- Builders tracking treasury activities
+- Researchers studying governance trends
+
+**Try asking me things like:**
+
+- "Show all active referenda on Polkadot"
+- "Who voted on referendum 472?"
+- "List treasury proposals above 100k DOT"
+- "How does conviction voting work?"
 
 **Useful Links:**
 
-- **Main Platform**: [polkassembly.io](https://polkassembly.io)
-
+- **Klara Guide**: [klara.polkassembly.io/guide](https://klara.polkassembly.io/guide) - If you want detailed guidance on how to use Klara, follow this doc
 - **Polkadot Governance**: [polkadot.polkassembly.io](https://polkadot.polkassembly.io)
-
 - **Kusama Governance**: [kusama.polkassembly.io](https://kusama.polkassembly.io)
-
-- **Documentation**: [docs.polkassembly.io](https://docs.polkassembly.io)
-
-- **GitHub**: [github.com/Premiurly/polkassembly](https://github.com/Premiurly/polkassembly)
-
-**What can I help you with?**
-
-Ask me about **Polkadot governance**, *parachains*, *staking*, *treasury proposals*, *referenda*, or any other **Polkadot/Kusama** related topics! 🚀"""
+- **Documentation**: [docs.polkassembly.io](https://docs.polkassembly.io)"""
 
         sources = [
             {
