@@ -58,25 +58,53 @@ class Query2SQL:
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
         
+        # SQL Model configuration
+        self.sql_model = os.getenv('SQL_MODEL', 'chatgpt').lower()
+        logger.info(f"SQL Model configured: {self.sql_model}")
+        
         # OpenAI configuration
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
-        if not self.openai_api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
+        self.openai_client = None
+        
+        # Gemini configuration
+        self.gemini_client = None
         
         # Timeout configuration
         self.api_timeout = float(os.getenv('API_TIMEOUT', '10'))  # Default 10 seconds
         
-        self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
-        
-        # Initialize Gemini client (optional fallback)
-        self.gemini_client = None
-        if GeminiClient is not None:
-            try:
-                self.gemini_client = GeminiClient(timeout=self.api_timeout)
-                logger.info("Gemini client initialized successfully as fallback")
-            except Exception as e:
-                logger.warning(f"Gemini client initialization failed: {e}")
-                logger.info("Continuing without Gemini fallback (OpenAI only mode)")
+        # Initialize clients based on SQL_MODEL preference
+        if self.sql_model == 'chatgpt':
+            # Initialize OpenAI as primary
+            if not self.openai_api_key:
+                raise ValueError("OPENAI_API_KEY environment variable is required when SQL_MODEL=chatgpt")
+            self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
+            logger.info("OpenAI client initialized as primary SQL model")
+            
+            # Initialize Gemini as fallback
+            if GeminiClient is not None:
+                try:
+                    self.gemini_client = GeminiClient(model_name="gemini-2.5-pro", timeout=self.api_timeout)
+                    logger.info("Gemini 2.5 Pro initialized as fallback")
+                except Exception as e:
+                    logger.warning(f"Gemini fallback initialization failed: {e}")
+        else:
+            # Initialize Gemini as primary (default for non-chatgpt values)
+            if GeminiClient is not None:
+                try:
+                    self.gemini_client = GeminiClient(model_name="gemini-2.5-pro", timeout=self.api_timeout)
+                    logger.info("Gemini 2.5 Pro initialized as primary SQL model")
+                except Exception as e:
+                    logger.error(f"Gemini 2.5 Pro initialization failed: {e}")
+                    raise ValueError("Failed to initialize Gemini 2.5 Pro. Please check GEMINI_API_KEY.")
+            else:
+                raise ValueError("Gemini client not available. Please install required dependencies.")
+            
+            # Initialize OpenAI as fallback
+            if self.openai_api_key:
+                self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
+                logger.info("OpenAI client initialized as fallback")
+            else:
+                logger.warning("OpenAI API key not provided, no fallback available")
         
         self.table_name = os.getenv('POSTGRES_TABLE_NAME', 'governance_data')
         
@@ -382,6 +410,79 @@ class Query2SQL:
         
         return trimmed_prompt
     
+    def _generate_sql_with_model(self, system_prompt: str, user_message: str = None) -> str:
+        """Generate SQL using the configured model (Gemini or ChatGPT)"""
+        try:
+            if self.sql_model == 'chatgpt' and self.openai_client:
+                # Use ChatGPT as primary
+                logger.debug("Using ChatGPT for SQL generation")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a PostgreSQL expert. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
+                        {"role": "user", "content": system_prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=800
+                )
+                return response.choices[0].message.content.strip()
+                
+            elif self.gemini_client:
+                # Use Gemini as primary (or fallback for ChatGPT)
+                logger.debug("Using Gemini 2.5 Pro for SQL generation")
+                
+                # Construct the full prompt for Gemini
+                full_prompt = f"""You are a PostgreSQL expert. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format.
+
+{system_prompt}"""
+                
+                response = self.gemini_client.get_response(full_prompt)
+                return response.strip()
+                
+            elif self.openai_client:
+                # Fallback to OpenAI if Gemini fails
+                logger.debug("Using ChatGPT as fallback for SQL generation")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a PostgreSQL expert. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
+                        {"role": "user", "content": system_prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=800
+                )
+                return response.choices[0].message.content.strip()
+            else:
+                raise ValueError("No SQL generation model available")
+                
+        except Exception as e:
+            logger.error(f"Error in primary SQL model, trying fallback: {e}")
+            
+            # Try fallback model
+            if self.sql_model != 'chatgpt' and self.openai_client:
+                # Gemini failed, try ChatGPT
+                logger.info("Falling back to ChatGPT for SQL generation")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a PostgreSQL expert. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
+                        {"role": "user", "content": system_prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=800
+                )
+                return response.choices[0].message.content.strip()
+            elif self.sql_model == 'chatgpt' and self.gemini_client:
+                # ChatGPT failed, try Gemini
+                logger.info("Falling back to Gemini 2.5 Pro for SQL generation")
+                full_prompt = f"""You are a PostgreSQL expert. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format.
+
+{system_prompt}"""
+                response = self.gemini_client.get_response(full_prompt)
+                return response.strip()
+            else:
+                raise e
+    
     def _get_table_schema(self) -> str:
         """Load schema directly from JSON file"""
         try:
@@ -570,17 +671,8 @@ DATABASE SCHEMA:
             
             # print(f"sql prompt, {system_prompt}")
             
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a PostgreSQL expert. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
-                    {"role": "user", "content": system_prompt}
-                ],
-                temperature=0.1,
-                max_tokens=800
-            )
-            
-            response_content = response.choices[0].message.content.strip()
+            # Use the configured model (Gemini or ChatGPT)
+            response_content = self._generate_sql_with_model(system_prompt)
             
             # Clean up the response
             response_content = response_content.replace('```json', '').replace('```sql', '').replace('```', '').strip()
@@ -741,7 +833,9 @@ DATABASE SCHEMA:
                     logger.info("Using Gemini as primary LLM for natural response generation from multiple queries")
                     natural_response = self.gemini_client.get_response(prompt)
                     logger.info("Generated natural language response from multiple queries using Gemini")
-                    return natural_response
+                    # Add disclaimer for onchain data
+                    disclaimer = "\n\n*The response is derived from on-chain data and may exhibit minor hallucinations. Chain-of-thought reasoning is being integrated to minimize these and enhance factual consistency, which will be available soon.*"
+                    return natural_response + disclaimer
                 except Exception as gemini_error:
                     logger.warning(f"Gemini failed for multiple queries, falling back to OpenAI: {gemini_error}")
             
@@ -759,7 +853,9 @@ DATABASE SCHEMA:
             
             natural_response = response.choices[0].message.content.strip()
             logger.info("Generated natural language response from multiple queries using OpenAI")
-            return natural_response
+            # Add disclaimer for onchain data
+            disclaimer = "\n\n*The response is derived from on-chain data and may exhibit minor hallucinations. Chain-of-thought reasoning is being integrated to minimize these and enhance factual consistency, which will be available soon.*"
+            return natural_response + disclaimer
             
         except Exception as e:
             logger.error(f"Error generating natural response from multiple queries: {e}")
@@ -895,7 +991,9 @@ DATABASE SCHEMA:
                     natural_response = self.gemini_client.get_response(prompt)
                     # logger.info(f"repsonse from gemini is: {natural_response}")
                     logger.info("Generated natural language response using Gemini")
-                    return natural_response
+                    # Add disclaimer for onchain data
+                    disclaimer = "\n\n*The response is derived from on-chain data and may exhibit minor hallucinations. Chain-of-thought reasoning is being integrated to minimize these and enhance factual consistency, which will be available soon.*"
+                    return natural_response + disclaimer
                 except Exception as gemini_error:
                     logger.warning(f"Gemini failed, falling back to OpenAI: {gemini_error}")
             
@@ -913,7 +1011,9 @@ DATABASE SCHEMA:
             
             natural_response = response.choices[0].message.content.strip()
             logger.info("Generated natural language response using OpenAI")
-            return natural_response
+            # Add disclaimer for onchain data
+            disclaimer = "\n\n*The response is derived from on-chain data and may exhibit minor hallucinations. Chain-of-thought reasoning is being integrated to minimize these and enhance factual consistency, which will be available soon.*"
+            return natural_response + disclaimer
             
         except Exception as e:
             logger.error(f"Error generating natural response: {e}")
@@ -1055,25 +1155,53 @@ class VoteQuery2SQL:
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
         
+        # SQL Model configuration
+        self.sql_model = os.getenv('SQL_MODEL', 'chatgpt').lower()
+        logger.info(f"SQL Model configured for voting: {self.sql_model}")
+        
         # OpenAI configuration
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
-        if not self.openai_api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
+        self.openai_client = None
+        
+        # Gemini configuration
+        self.gemini_client = None
         
         # Timeout configuration
         self.api_timeout = float(os.getenv('API_TIMEOUT', '10'))  # Default 10 seconds
         
-        self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
-        
-        # Initialize Gemini client (optional fallback)
-        self.gemini_client = None
-        if GeminiClient is not None:
-            try:
-                self.gemini_client = GeminiClient(timeout=self.api_timeout)
-                logger.info("Gemini client initialized successfully as fallback")
-            except Exception as e:
-                logger.warning(f"Gemini client initialization failed: {e}")
-                logger.info("Continuing without Gemini fallback (OpenAI only mode)")
+        # Initialize clients based on SQL_MODEL preference
+        if self.sql_model == 'chatgpt':
+            # Initialize OpenAI as primary
+            if not self.openai_api_key:
+                raise ValueError("OPENAI_API_KEY environment variable is required when SQL_MODEL=chatgpt")
+            self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
+            logger.info("OpenAI client initialized as primary SQL model for voting")
+            
+            # Initialize Gemini as fallback
+            if GeminiClient is not None:
+                try:
+                    self.gemini_client = GeminiClient(model_name="gemini-2.5-pro", timeout=self.api_timeout)
+                    logger.info("Gemini 2.5 Pro initialized as fallback for voting")
+                except Exception as e:
+                    logger.warning(f"Gemini fallback initialization failed: {e}")
+        else:
+            # Initialize Gemini as primary (default for non-chatgpt values)
+            if GeminiClient is not None:
+                try:
+                    self.gemini_client = GeminiClient(model_name="gemini-2.5-pro", timeout=self.api_timeout)
+                    logger.info("Gemini 2.5 Pro initialized as primary SQL model for voting")
+                except Exception as e:
+                    logger.error(f"Gemini 2.5 Pro initialization failed: {e}")
+                    raise ValueError("Failed to initialize Gemini 2.5 Pro. Please check GEMINI_API_KEY.")
+            else:
+                raise ValueError("Gemini client not available. Please install required dependencies.")
+            
+            # Initialize OpenAI as fallback
+            if self.openai_api_key:
+                self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
+                logger.info("OpenAI client initialized as fallback for voting")
+            else:
+                logger.warning("OpenAI API key not provided, no fallback available for voting")
         
         self.table_name = 'flattened_conviction_votes'
         
@@ -1218,6 +1346,79 @@ class VoteQuery2SQL:
         
         return trimmed_prompt
 
+    def _generate_sql_with_model(self, system_prompt: str, user_message: str = None) -> str:
+        """Generate SQL using the configured model (Gemini or ChatGPT) for voting data"""
+        try:
+            if self.sql_model == 'chatgpt' and self.openai_client:
+                # Use ChatGPT as primary
+                logger.debug("Using ChatGPT for voting SQL generation")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a PostgreSQL expert specializing in voting data. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
+                        {"role": "user", "content": system_prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=800
+                )
+                return response.choices[0].message.content.strip()
+                
+            elif self.gemini_client:
+                # Use Gemini as primary (or fallback for ChatGPT)
+                logger.debug("Using Gemini 2.5 Pro for voting SQL generation")
+                
+                # Construct the full prompt for Gemini
+                full_prompt = f"""You are a PostgreSQL expert specializing in voting data. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format.
+
+{system_prompt}"""
+                
+                response = self.gemini_client.get_response(full_prompt)
+                return response.strip()
+                
+            elif self.openai_client:
+                # Fallback to OpenAI if Gemini fails
+                logger.debug("Using ChatGPT as fallback for voting SQL generation")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a PostgreSQL expert specializing in voting data. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
+                        {"role": "user", "content": system_prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=800
+                )
+                return response.choices[0].message.content.strip()
+            else:
+                raise ValueError("No SQL generation model available for voting data")
+                
+        except Exception as e:
+            logger.error(f"Error in primary SQL model for voting, trying fallback: {e}")
+            
+            # Try fallback model
+            if self.sql_model != 'chatgpt' and self.openai_client:
+                # Gemini failed, try ChatGPT
+                logger.info("Falling back to ChatGPT for voting SQL generation")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a PostgreSQL expert specializing in voting data. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
+                        {"role": "user", "content": system_prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=800
+                )
+                return response.choices[0].message.content.strip()
+            elif self.sql_model == 'chatgpt' and self.gemini_client:
+                # ChatGPT failed, try Gemini
+                logger.info("Falling back to Gemini 2.5 Pro for voting SQL generation")
+                full_prompt = f"""You are a PostgreSQL expert specializing in voting data. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format.
+
+{system_prompt}"""
+                response = self.gemini_client.get_response(full_prompt)
+                return response.strip()
+            else:
+                raise e
+
     def generate_sql_query_for_voting(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> List[str]:
         """Convert natural language query to SQL for voting data"""
         try:
@@ -1352,17 +1553,8 @@ Natural Language Query: {natural_query}
 SQL Query:
 """
             
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a PostgreSQL expert specializing in voting data. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
-                    {"role": "user", "content": system_prompt}
-                ],
-                temperature=0.1,
-                max_tokens=800
-            )
-            
-            response_content = response.choices[0].message.content.strip()
+            # Use the configured model (Gemini or ChatGPT) for voting data
+            response_content = self._generate_sql_with_model(system_prompt)
             
             # Clean up the response
             response_content = response_content.replace('```json', '').replace('```sql', '').replace('```', '').strip()
@@ -1504,7 +1696,10 @@ SQL Query:
                 max_tokens=300
             )
             
-            return response.choices[0].message.content.strip()
+            natural_response = response.choices[0].message.content.strip()
+            # Add disclaimer for onchain voting data
+            disclaimer = "\n\n*The response is derived from on-chain data and may exhibit minor hallucinations. Chain-of-thought reasoning is being integrated to minimize these and enhance factual consistency, which will be available soon.*"
+            return natural_response + disclaimer
             
         except Exception as e:
             logger.error(f"Error generating natural response: {e}")
