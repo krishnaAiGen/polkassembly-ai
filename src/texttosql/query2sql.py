@@ -335,33 +335,34 @@ class Query2SQL:
         # Approximate token counting (1 token ≈ 4 characters for English)
         return len(text) // 4
     
-    def trim_prompt_to_fit_tokens(self, system_prompt: str, max_tokens: int = 8192, completion_tokens: int = 800, buffer_tokens: int = 200) -> str:
+    def trim_prompt_to_fit_tokens(self, system_prompt: str, max_tokens: int = 20000, completion_tokens: int = 1000, buffer_tokens: int = 500) -> str:
         """
         Trim the system prompt to fit within token limits
         
         Args:
             system_prompt: The full system prompt
-            max_tokens: Maximum tokens allowed by the model (default: 8192 for GPT-4)
-            completion_tokens: Tokens reserved for completion (default: 800)
-            buffer_tokens: Safety buffer tokens (default: 200)
+            max_tokens: Maximum tokens allowed by the model (default: 20000)
+            completion_tokens: Tokens reserved for completion (default: 1000)
+            buffer_tokens: Safety buffer tokens (default: 500)
         
         Returns:
             Trimmed system prompt that fits within limits
         """
-        # Calculate available tokens for the prompt
-        available_tokens = max_tokens - completion_tokens - buffer_tokens
-        
         # Count current tokens
         current_tokens = self.count_tokens(system_prompt)
         
-        logger.info(f"Token analysis - Current: {current_tokens}, Available: {available_tokens}, Max: {max_tokens}")
-        
         # If within limits, return as-is
-        if current_tokens <= available_tokens:
+        if current_tokens <= max_tokens:
+            logger.info(f"Token analysis - Current: {current_tokens}, Max: {max_tokens} - No trimming needed")
             return system_prompt
         
-        # Need to trim - calculate target length
-        target_length = int(len(system_prompt) * (available_tokens / current_tokens))
+        # Calculate target tokens (95% of max_tokens)
+        target_tokens = int(max_tokens * 0.95)
+        
+        logger.info(f"Token analysis - Current: {current_tokens}, Max: {max_tokens}, Target: {target_tokens} - Trimming needed")
+        
+        # Calculate target length based on token ratio
+        target_length = int(len(system_prompt) * (target_tokens / current_tokens))
         
         # Find good places to cut (preserve important sections)
         lines = system_prompt.split('\n')
@@ -406,7 +407,7 @@ class Query2SQL:
         
         # Final token check
         final_tokens = self.count_tokens(trimmed_prompt)
-        logger.info(f"Prompt trimmed: {current_tokens} -> {final_tokens} tokens (target: {available_tokens})")
+        logger.info(f"Prompt trimmed: {current_tokens} -> {final_tokens} tokens (target: {target_tokens})")
         
         return trimmed_prompt
     
@@ -550,157 +551,19 @@ class Query2SQL:
                 conn.close()
     
     def generate_sql_query(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> List[str]:
-        """Convert natural language query to SQL using OpenAI - can return multiple queries"""
+        """Convert natural language query to SQL using OpenAI - can return multiple queries with error correction"""
 
         # print("Schema of table is", self.table_schema)
 
         try:
-
-            
-            system_prompt = f"""You are a PostgreSQL expert. Convert natural language queries into optimized SQL queries.
-
-CONVERSATION CONTEXT:
-Conversation history: {conversation_history}
-- If current query is a follow-up: Generate SQL that builds upon or references previous context
-- If current query is standalone: Generate SQL independently
-- Use your judgment to determine query relationships
-
-
-DATABASE SCHEMA:
-{self.table_schema}
-
-
-            CORE SQL GUIDELINES:
-            1. Use ONLY existing columns from the schema above
-            2. Table name: {self.table_name}
-            3. Use proper PostgreSQL syntax with double quotes for column names
-            4. Apply appropriate LIMIT clauses (typically 10 for lists, no limit for counts)
-
-            DATA FILTERING RULES:
-            5. Network filtering: Use 'source_network' column (values: 'polkadot', 'kusama')
-            6. Proposal types: Use 'source_proposal_type' column  
-            7. Proposal IDs: Use 'index' column
-            8. Date filtering: Use DATE_TRUNC() for month/year, direct comparison for specific dates
-            9. Text search: Use ILIKE for case-insensitive matching with % wildcards
-            10. When you filter data by taking keywords from query itself. Some you can take from title, however see the
-                param supported in the DATABASE SCHEMA and use the nearest matching param. 
-                For example: 
-                -can you show me some treasury proposals currently in voting
-                -Don't use SELECT "title", "index", "onchaininfo_status", "createdat" FROM governance_data WHERE "source_proposal_type" ILIKE \'%treasury%\' AND "onchaininfo_status" = \'Voting\' LIMIT 10;
-                -Don't use "onchaininfo_status" = \'Voting\' since Voting is not in params, use nearest which can be "onchaininfo_status" = \'Deciding\'
-                -You can find all possible supported params in description of DATABSE SCHEMA.
-
-
-            CRITICAL NULL VALUE HANDLING:
-            10. Many columns contain NULL values - use IS NOT NULL when querying for specific values
-            11. For amount queries (highest, lowest, etc.): ALWAYS add IS NOT NULL condition
-            12. For date-based queries: Consider adding IS NOT NULL for 'createdat' if needed
-            13. Key columns with NULLs: amounts, addresses, vote metrics, dates
-
-            NaN VALUE HANDLING:
-            14. Some columns also contain 'NaN' string values - use != 'NaN' condition along with IS NOT NULL
-            15. For amount/numeric queries: Add both IS NOT NULL AND != 'NaN' conditions
-            16. When ordering by numeric columns: Use CAST(column AS FLOAT) for proper numeric sorting
-            17. Example: WHERE "amount" IS NOT NULL AND "amount" != 'NaN' ORDER BY CAST("amount" AS FLOAT) DESC
-            
-            MULTIPLE QUERIES STRATEGY:
-            - If query asks for COUNT and EXAMPLES (like "how many proposals and name a few"), return 2 queries:
-              Query 1: COUNT query to get the total number
-              Query 2: SELECT query to get examples with details
-            - If query asks only for count, return 1 COUNT query
-            - If query asks only for examples/list, return 1 SELECT query
-            - Return queries as a JSON array: ["query1", "query2"]
-            
-            COLUMN SELECTION STRATEGY:
-            - For general queries: SELECT key columns like "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", "content"
-            - For searches: Focus on "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", "content"
-            - For FINANCIAL/AMOUNT queries: ALWAYS include "onchaininfo_beneficiaries_0_assetid" along with "onchaininfo_beneficiaries_0_amount". Both fields are must required at any cost.
-            - Avoid SELECT * unless specifically needed - it causes long responses. Only use when somebody asks fro more info on proposals, referenda ID.
-            - But, if somebody ask, proposals in voting then also use other attributes such as DecisionDepositPlaced, Submitted, ConfirmStarted, ConfirmAborted along with Deciding.
-            
-            EXAMPLE QUERIES:
-            Single Query Examples:
-             - "Show me recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
-            - "Find Kusama proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type" FROM {self.table_name} WHERE "source_network" = 'kusama' LIMIT 10;
-            - "What treasury proposals exist?" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type" FROM {self.table_name} WHERE "source_proposal_type" ILIKE '%treasury%' LIMIT 10;
-            - "Tell me about clarys proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "content" ILIKE '%clarys%' OR "title" ILIKE '%clarys%' LIMIT 10;
-            - "Tell me about subsquare proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "content" ILIKE '%subsquare%' OR "title" ILIKE '%subsquare%' LIMIT 10;
-            - "Give me the details of the proposal with id 123456" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "index" = 123456 LIMIT 10;
-            - "Give me some recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", "content" FROM {self.table_name} ORDER BY "createdat" DESC LIMIT 10;
-            - "Give me proposals after 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content" FROM {self.table_name} WHERE "createdat" > '2024-01-01' LIMIT 10;
-            - "Give me proposals before 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat" , "content" FROM {self.table_name} WHERE "createdat" < '2024-01-01' LIMIT 10;
-            - "Give me proposals between dates" -> SELECT "title", "index", "onchaininfo_status", "createdat" , "content" FROM {self.table_name} WHERE "createdat" BETWEEN '2024-01-01' AND '2024-01-02' LIMIT 10;
-            - "Count total proposals" -> SELECT COUNT(*) as total_proposals FROM {self.table_name};
-            - "Show me proposal amounts" -> SELECT "title", "onchaininfo_beneficiaries_0_assetid", "index", "onchaininfo_beneficiaries_0_amount", "createdat" FROM {self.table_name} WHERE "onchaininfo_beneficiaries_0_amount" IS NOT NULL LIMIT 10;
-            
-            Multiple Query Examples:
-            - "How many proposals in August 2025 and name a few?" -> ["SELECT COUNT(*) as total_count FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2025-08-01';", "SELECT \"title\", \"index\", \"onchaininfo_status\", \"createdat\" FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2025-08-01' LIMIT 10;"]
-            - "How many Kusama proposals exist and show some examples?" -> ["SELECT COUNT(*) as kusama_count FROM {self.table_name} WHERE \"source_network\" = 'kusama';", "SELECT \"title\", \"index\", \"onchaininfo_status\", \"createdat\" FROM {self.table_name} WHERE \"source_network\" = 'kusama' LIMIT 10;"]
-            
-            Null Results
-            - Some columns has NULL and NaN values and for some queries like 
-            - tell me the proposal who had asked for highest amount in the month of august 2025, use NOT NULL and != NaN to get correct result. Do your own thinking and generate the query where NOT NULL and !=NaN is needed. Example:
-                    SELECT
-                        "title",
-                        "index",
-                        "onchaininfo_beneficiaries_0_assetid",
-                        "onchaininfo_beneficiaries_0_amount",
-                        "createdat"
-                    FROM
-                        governance_data
-                    WHERE
-                        DATE_TRUNC('month', "createdat") = '2025-08-01'
-                        AND "onchaininfo_beneficiaries_0_amount" IS NOT NULL
-                        AND "onchaininfo_beneficiaries_0_amount" != 'NaN'
-                    ORDER BY
-                        CAST("onchaininfo_beneficiaries_0_amount" AS FLOAT) DESC
-                    LIMIT 1;
-
-            - Columns with NULL/NaN values: ['publicuser_profiledetails_publicsociallinks_0_platform', 'history_1_title', 'linkedpost_indexorhash', 'tags_1_network', 'index', 'onchaininfo_votemetrics', 'hash', 'content', 'onchaininfo_beneficiaries_0_assetid', 'publicuser_addresses_3', 'userid', 'history_0_title', 'onchaininfo_prepareperiodendsat', 'history_2_createdat_seconds', 'tags_0_network', 'publicuser_addresses_2', 'topic', 'onchaininfo_proposer', 'history_2_content', 'poll', 'publicuser_profiledetails_title', 'publicuser_profiledetails_publicsociallinks_0_url', 'onchaininfo_index', 'history_1_createdat_nanoseconds', 'onchaininfo_beneficiaries_0_amount', 'history_1_content', 'onchaininfo_votemetrics_bareayes_value', 'publicuser_profilescore', 'onchaininfo_decisionperiodendsat', 'history_0_content', 'tags_0_lastusedat', 'tags_2_lastusedat', 'tags_2_value', 'id', 'tags_1_value', 'history_0_createdat_seconds', 'updatedat', 'onchaininfo_origin', 'publicuser_profiledetails_coverimage', 'onchaininfo_votemetrics_nay_count', 'onchaininfo_votemetrics_aye_count', 'createdat', 'history_2_title', 'onchaininfo_votemetrics_aye_value', 'publicuser_profiledetails_bio', 'history_0_createdat_nanoseconds', 'publicuser_profiledetails_image', 'linkedpost_proposaltype', 'onchaininfo_beneficiaries_0_address', 'publicuser_addresses_0', 'publicuser_rank', 'tags_1_lastusedat', 'tags_0_value', 'publicuser_addresses_1', 'onchaininfo_votemetrics_nay_value', 'onchaininfo_votemetrics_support_value', 'onchaininfo_hash', 'onchaininfo_reward', 'publicuser_id', 'onchaininfo_description', 'publicuser_addresses_4', 'history_1_createdat_seconds', 'onchaininfo_curator', 'history_2_createdat_nanoseconds', 'publicuser_createdat', 'publicuser_username', 'tags_2_network']
-
-            Very very Important Rule:
-            - For every query you generate, you must add a filter of source_proposal_type = 'ReferendumV2' unless, otherwise, specified that somebody needs info on ChildBounty, FellowshipReferendum and Bounty.
-            
-            Natural Language Query: {natural_query}
-            
-            SQL Query:
-            """
-            
-            # Trim prompt to fit token limits
-            system_prompt = self.trim_prompt_to_fit_tokens(system_prompt, max_tokens=8192, completion_tokens=800, buffer_tokens=200)
-            
-            # print(f"sql prompt, {system_prompt}")
-            
-            # Use the configured model (Gemini or ChatGPT)
-            response_content = self._generate_sql_with_model(system_prompt)
-            
-            # Clean up the response
-            response_content = response_content.replace('```json', '').replace('```sql', '').replace('```', '').strip()
-            
-            try:
-                # Try to parse as JSON array
-                import json
-                sql_queries = json.loads(response_content)
-                
-                # Ensure it's a list
-                if isinstance(sql_queries, str):
-                    sql_queries = [sql_queries]
-                elif not isinstance(sql_queries, list):
-                    sql_queries = [str(sql_queries)]
-                    
-                logger.info(f"Generated {len(sql_queries)} SQL queries: {sql_queries}")
-                return sql_queries
-                
-            except json.JSONDecodeError:
-                # Fallback: treat as single query
-                logger.warning("Could not parse JSON, treating as single query")
-                single_query = response_content.strip()
-                logger.info(f"Generated single SQL query: {single_query}")
-                return [single_query]
+            # Generate initial SQL queries
+            sql_queries = self._generate_sql_with_retry(natural_query, conversation_history)
+            return sql_queries
             
         except Exception as e:
             logger.error(f"Error generating SQL query: {e}")
             raise
+
     
     def execute_sql_queries(self, sql_queries: List[str]) -> List[Tuple[List[Dict[str, Any]], List[str]]]:
         """Execute multiple SQL queries against PostgreSQL database"""
@@ -745,7 +608,13 @@ DATABASE SCHEMA:
             for i, (sql_query, (results, columns)) in enumerate(zip(sql_queries, all_results)):
                 result_count = len(results)
                 combined_summary += f"Query {i+1}: {sql_query}\n"
-                combined_summary += f"Results: {result_count} rows\n"
+                
+                # Add limitation information
+                displayed_count = min(5, result_count)
+                if result_count > displayed_count:
+                    combined_summary += f"Results: {result_count} rows (showing few due to length)\n"
+                else:
+                    combined_summary += f"Results: {result_count} rows\n"
                 
                 # Add sample data from this query
                 if results:
@@ -894,16 +763,31 @@ DATABASE SCHEMA:
             key_columns = [col for col in columns if any(keyword in col.lower() 
                           for keyword in ['title', 'index', 'status', 'network', 'type', 'createdat', 'amount'])]
             
+            # Check if total_count is available from window function
+            total_count_from_window = None
+            if trimmed_results and 'total_count' in trimmed_results[0]:
+                total_count_from_window = trimmed_results[0]['total_count']
+            
+            # Use window function count if available, otherwise use result_count
+            actual_total_count = total_count_from_window if total_count_from_window is not None else result_count
+            
             # Create a summary of the data with trimmed content
+            displayed_count = len(trimmed_results)
+            is_limited = actual_total_count > displayed_count
             results_summary = {
-                "total_rows": result_count,
+                "total_rows": actual_total_count,
                 "key_columns": key_columns[:10],  # Limit columns shown
                 "sample_data": trimmed_results,
-                "showing": f"Showing {min(5, result_count)} of {result_count} results" if result_count > 5 else f"Showing all {result_count} results"
+                "showing": f"Showing {displayed_count} of {actual_total_count} results" if is_limited else f"Showing all {actual_total_count} results",
+                "is_limited": is_limited,
+                "displayed_count": displayed_count
             }
             
             # Create a more concise summary for the prompt
-            summary_text = f"Found {result_count} results. "
+            if is_limited:
+                summary_text = f"Found {actual_total_count} results (showing few due to length). "
+            else:
+                summary_text = f"Found {actual_total_count} results. "
             
             # Create a structured summary of key data points
             if trimmed_results:
@@ -959,7 +843,8 @@ DATABASE SCHEMA:
             4. ADDRESS QUERIES: Show actual blockchain addresses - these are public on-chain data
             5. AMOUNT QUERIES: Display exact values requested in proposals
             6. 20-300 is the ideal word output count. If the output will be too long, provide in summarization form instead of listing all the data.
-            7. If you are providing any info on proposal with title, use the automatically generated proposal links:
+            7. RESULT LIMITATION: If there are more results than displayed, mention this limitation in your response. Say something like "I found X results, but due to the large amount of data, I'm only displaying a few here." Always include the exact count of total results found.
+            8. If you are providing any info on proposal with title, use the automatically generated proposal links:
                 - Use 'proposal_link' field for the URL
                 - Use 'proposal_link_display' field for markdown formatted link with title
                 - Links are automatically generated based on proposal type and network
@@ -1021,24 +906,23 @@ DATABASE SCHEMA:
             return f"I found {len(results)} results for your query '{natural_query}', but I'm having trouble formatting the response. Here's a summary: The query returned {len(results)} rows from the database."
     
     def process_query(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None, table: Optional[str] = None) -> Dict[str, Any]:
-        """Main method to process a natural language query end-to-end"""
+        """Main method to process a natural language query end-to-end with error correction"""
         try:
             logger.info(f"Processing query: {natural_query}")
             
-            # Step 1: Generate SQL queries (can be multiple)
-            sql_queries = self.generate_sql_query(natural_query, conversation_history)
+            # Step 1: Generate and execute SQL queries with error correction
+            sql_queries, all_results = self._generate_and_execute_with_retry(natural_query, conversation_history)
             
-            # Step 2: Execute SQL queries
+            # Step 2: Process results
             if len(sql_queries) == 1:
                 # Single query - use existing flow for backwards compatibility
-                results, columns = self.execute_sql_query(sql_queries[0])
+                results, columns = all_results[0]
                 
                 # Format amounts in results
                 results = self.format_amount_by_asset_id(results)
                 
                 # Add proposal links to results
                 results = self.add_proposal_links(results)
-                # print(f"results after formatting amounts: {results}")
                 
                 # Step 3: Generate natural language response
                 natural_response = self.generate_natural_response(
@@ -1057,8 +941,6 @@ DATABASE SCHEMA:
                 }
             else:
                 # Multiple queries
-                all_results = self.execute_sql_queries(sql_queries)
-                
                 # Format amounts and add proposal links in all results
                 formatted_all_results = []
                 for results, columns in all_results:
@@ -1106,10 +988,254 @@ DATABASE SCHEMA:
                 "result_count": 0,
                 "results": [],
                 "columns": [],
-                "natural_response": f"I'm sorry, I encountered an error processing your query: '{natural_query}'. Error: {str(e)}",
+                "natural_response": "I'm sorry, I encountered an error processing your query. Please try rephrasing your question or try again later.",
                 "success": False,
                 "error": str(e)
             }
+
+    def _generate_and_execute_with_retry(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None, max_retries: int = 3) -> Tuple[List[str], List[Tuple[List[Dict[str, Any]], List[str]]]]:
+        """Generate SQL queries and execute them with error correction and retry mechanism"""
+        
+        # Base system prompt
+        base_system_prompt = f"""You are a PostgreSQL expert. Convert natural language queries into optimized SQL queries.
+
+CONVERSATION CONTEXT:
+Conversation history: {conversation_history}
+- If current query is a follow-up: Generate SQL that builds upon or references previous context
+- If current query is standalone: Generate SQL independently
+- Use your judgment to determine query relationships
+
+
+DATABASE SCHEMA:
+{self.table_schema}
+
+
+            CORE SQL GUIDELINES:
+            1. Use ONLY existing columns from the schema above
+            2. Table name: {self.table_name}
+            3. Use proper PostgreSQL syntax with double quotes for column names
+            4. Apply appropriate LIMIT clauses (typically 10 for lists, no limit for counts)
+            5. AUTOMATIC NULL HANDLING: For ANY column used in WHERE, ORDER BY, or filtering conditions, ALWAYS add "column_name IS NOT NULL" to avoid NULL values
+
+            DATA FILTERING RULES:
+            5. Network filtering: Use 'source_network' column (values: 'polkadot', 'kusama')
+            6. Proposal types: Use 'source_proposal_type' column  
+            7. Proposal IDs: Use 'index' column
+            8. Date filtering: Use DATE_TRUNC() for month/year, direct comparison for specific dates
+            9. Text search: Use ILIKE for case-insensitive matching with % wildcards
+            10. When you filter data by taking keywords from query itself. Some you can take from title, however see the
+                param supported in the DATABASE SCHEMA and use the nearest matching param. 
+                For example: 
+                -can you show me some treasury proposals currently in voting
+                -Don't use SELECT "title", "index", "onchaininfo_status", "createdat" FROM governance_data WHERE "source_proposal_type" ILIKE \'%treasury%\' AND "onchaininfo_status" = \'Voting\' LIMIT 10;
+                -Don't use "onchaininfo_status" = \'Voting\' since Voting is not in params, use nearest which can be "onchaininfo_status" = \'Deciding\'
+                -You can find all possible supported params in description of DATABSE SCHEMA.
+
+
+            CRITICAL NULL VALUE HANDLING:
+            10. Many columns contain NULL values - ALWAYS add IS NOT NULL condition for any column used in filtering, ordering, or sorting
+            11. For amount queries (highest, lowest, etc.): ALWAYS add IS NOT NULL condition
+            12. For date-based queries: ALWAYS add IS NOT NULL for 'createdat' when filtering or ordering by date
+            13. For text searches: ALWAYS add IS NOT NULL for the column being searched
+            14. For ordering/sorting: ALWAYS add IS NOT NULL for the column being ordered by (e.g., ORDER BY "createdat" requires "createdat" IS NOT NULL)
+            15. For any WHERE conditions: ALWAYS add IS NOT NULL for the column being filtered
+            16. Key columns with NULLs: amounts, addresses, vote metrics, dates, titles, content, createdat, etc.
+            
+            MANDATORY NULL HANDLING RULES:
+            - If you use a column in WHERE clause: add "column_name IS NOT NULL"
+            - If you use a column in ORDER BY clause: add "column_name IS NOT NULL" OR use "NULLS LAST"
+            - If you use a column in GROUP BY clause: add "column_name IS NOT NULL"
+            - If you use a column in HAVING clause: add "column_name IS NOT NULL"
+            - This applies to ALL columns, not just specific ones
+            - For ORDER BY: Prefer "IS NOT NULL" in WHERE clause, but if you must include NULLs, use "NULLS LAST"
+
+            NaN VALUE HANDLING:
+            14. Some columns also contain 'NaN' string values - use != 'NaN' condition along with IS NOT NULL
+            15. For amount/numeric queries: Add both IS NOT NULL AND != 'NaN' conditions
+            16. When ordering by numeric columns: Use CAST(column AS FLOAT) for proper numeric sorting
+            17. Example: WHERE "amount" IS NOT NULL AND "amount" != 'NaN' ORDER BY CAST("amount" AS FLOAT) DESC
+            
+            MULTIPLE QUERIES STRATEGY:
+            - If query asks for COUNT and EXAMPLES (like "how many proposals and name a few"), return 2 queries:
+              Query 1: COUNT query to get the total number
+              Query 2: SELECT query to get examples with details
+            - If query asks only for count, return 1 COUNT query
+            - If query asks only for examples/list, return 1 SELECT query
+            - Return queries as a JSON array: ["query1", "query2"]
+            
+            COLUMN SELECTION STRATEGY:
+            - For general queries: SELECT key columns like "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", "content"
+            - For searches: Focus on "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", "content"
+            - For FINANCIAL/AMOUNT queries: ALWAYS include "onchaininfo_beneficiaries_0_assetid" along with "onchaininfo_beneficiaries_0_amount". Both fields are must required at any cost.
+            - Avoid SELECT * unless specifically needed - it causes long responses. Only use when somebody asks fro more info on proposals, referenda ID.
+            - But, if somebody ask, proposals in voting then also use other attributes such as DecisionDepositPlaced, Submitted, ConfirmStarted, ConfirmAborted along with Deciding.
+            
+            WINDOW FUNCTION FOR COUNT:
+            - When using LIMIT clause, ALWAYS include COUNT(*) OVER() as total_count to get the total number of matching records
+            - This allows showing "Found X results, displaying few" with accurate total count
+            - Example: SELECT "title", "index", "onchaininfo_status", COUNT(*) OVER() as total_count FROM table WHERE conditions ORDER BY createdat DESC LIMIT 10;
+            
+            ORDER BY NULL HANDLING EXAMPLE:
+            - WRONG: SELECT * FROM table WHERE conditions ORDER BY "createdat" DESC
+            - CORRECT: SELECT * FROM table WHERE conditions AND "createdat" IS NOT NULL ORDER BY "createdat" DESC
+            - ALWAYS add IS NOT NULL for the ORDER BY column in the WHERE clause
+            - ALTERNATIVE: Use NULLS LAST to push NULL values to bottom: ORDER BY "createdat" DESC NULLS LAST
+            
+            EXAMPLE QUERIES:
+            Single Query Examples:
+             - "Show me recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE "createdat" IS NOT NULL ORDER BY "createdat" DESC LIMIT 10;
+             - "Find Kusama proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE "source_network" = 'kusama' AND "source_network" IS NOT NULL ORDER BY "createdat" DESC LIMIT 10;
+             - "What treasury proposals exist?" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE "source_proposal_type" ILIKE '%treasury%' AND "source_proposal_type" IS NOT NULL ORDER BY "createdat" DESC LIMIT 10;
+             - "Tell me about clarys proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE ("content" ILIKE '%clarys%' AND "content" IS NOT NULL) OR ("title" ILIKE '%clarys%' AND "title" IS NOT NULL) ORDER BY "createdat" DESC LIMIT 10;
+             - "Tell me about subsquare proposal" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE ("content" ILIKE '%subsquare%' AND "content" IS NOT NULL) OR ("title" ILIKE '%subsquare%' AND "title" IS NOT NULL) ORDER BY "createdat" DESC LIMIT 10;
+             - "Give me the details of the proposal with id 123456" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE "index" = 123456 AND "index" IS NOT NULL ORDER BY "createdat" DESC LIMIT 10;
+             - "Give me some recent proposals" -> SELECT "title", "index", "onchaininfo_status", "createdat", "source_network", "source_proposal_type", "content", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE "createdat" IS NOT NULL ORDER BY "createdat" DESC LIMIT 10;
+             - "Give me proposals after 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE "createdat" > '2024-01-01' AND "createdat" IS NOT NULL ORDER BY "createdat" DESC LIMIT 10;
+             - "Give me proposals before 2024-01-01" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE "createdat" < '2024-01-01' AND "createdat" IS NOT NULL ORDER BY "createdat" DESC LIMIT 10;
+             - "Give me proposals between dates" -> SELECT "title", "index", "onchaininfo_status", "createdat", "content", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE "createdat" BETWEEN '2024-01-01' AND '2024-01-02' AND "createdat" IS NOT NULL ORDER BY "createdat" DESC LIMIT 10;
+             - "Count total proposals" -> SELECT COUNT(*) as total_proposals FROM {self.table_name};
+             - "Show me proposal amounts" -> SELECT "title", "onchaininfo_beneficiaries_0_assetid", "index", "onchaininfo_beneficiaries_0_amount", "createdat", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE "onchaininfo_beneficiaries_0_amount" IS NOT NULL AND "onchaininfo_beneficiaries_0_amount" != 'NaN' ORDER BY "createdat" DESC LIMIT 10;
+             - "Show me all proposals ordered by date" -> SELECT "title", "index", "onchaininfo_status", "createdat", COUNT(*) OVER() as total_count FROM {self.table_name} ORDER BY "createdat" DESC NULLS LAST LIMIT 10;
+            
+            Multiple Query Examples:
+            - "How many proposals in August 2025 and name a few?" -> ["SELECT COUNT(*) as total_count FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2025-08-01' AND \"createdat\" IS NOT NULL;", "SELECT \"title\", \"index\", \"onchaininfo_status\", \"createdat\", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE DATE_TRUNC('month', \"createdat\") = '2025-08-01' AND \"createdat\" IS NOT NULL ORDER BY \"createdat\" DESC LIMIT 10;"]
+            - "How many Kusama proposals exist and show some examples?" -> ["SELECT COUNT(*) as kusama_count FROM {self.table_name} WHERE \"source_network\" = 'kusama' AND \"source_network\" IS NOT NULL;", "SELECT \"title\", \"index\", \"onchaininfo_status\", \"createdat\", COUNT(*) OVER() as total_count FROM {self.table_name} WHERE \"source_network\" = 'kusama' AND \"source_network\" IS NOT NULL ORDER BY \"createdat\" DESC LIMIT 10;"]
+            
+            Null Results
+            - Some columns has NULL and NaN values and for some queries like 
+            - tell me the proposal who had asked for highest amount in the month of august 2025, use NOT NULL and != NaN to get correct result. Do your own thinking and generate the query where NOT NULL and !=NaN is needed. Example:
+                    SELECT
+                        "title",
+                        "index",
+                        "onchaininfo_beneficiaries_0_assetid",
+                        "onchaininfo_beneficiaries_0_amount",
+                        "createdat"
+                    FROM
+                        governance_data
+                    WHERE
+                        DATE_TRUNC('month', "createdat") = '2025-08-01'
+                        AND "onchaininfo_beneficiaries_0_amount" IS NOT NULL
+                        AND "onchaininfo_beneficiaries_0_amount" != 'NaN'
+                    ORDER BY
+                        CAST("onchaininfo_beneficiaries_0_amount" AS FLOAT) DESC
+                    LIMIT 1;
+
+            - Columns with NULL/NaN values: ['publicuser_profiledetails_publicsociallinks_0_platform', 'history_1_title', 'linkedpost_indexorhash', 'tags_1_network', 'index', 'onchaininfo_votemetrics', 'hash', 'content', 'onchaininfo_beneficiaries_0_assetid', 'publicuser_addresses_3', 'userid', 'history_0_title', 'onchaininfo_prepareperiodendsat', 'history_2_createdat_seconds', 'tags_0_network', 'publicuser_addresses_2', 'topic', 'onchaininfo_proposer', 'history_2_content', 'poll', 'publicuser_profiledetails_title', 'publicuser_profiledetails_publicsociallinks_0_url', 'onchaininfo_index', 'history_1_createdat_nanoseconds', 'onchaininfo_beneficiaries_0_amount', 'history_1_content', 'onchaininfo_votemetrics_bareayes_value', 'publicuser_profilescore', 'onchaininfo_decisionperiodendsat', 'history_0_content', 'tags_0_lastusedat', 'tags_2_lastusedat', 'tags_2_value', 'id', 'tags_1_value', 'history_0_createdat_seconds', 'updatedat', 'onchaininfo_origin', 'publicuser_profiledetails_coverimage', 'onchaininfo_votemetrics_nay_count', 'onchaininfo_votemetrics_aye_count', 'createdat', 'history_2_title', 'onchaininfo_votemetrics_aye_value', 'publicuser_profiledetails_bio', 'history_0_createdat_nanoseconds', 'publicuser_profiledetails_image', 'linkedpost_proposaltype', 'onchaininfo_beneficiaries_0_address', 'publicuser_addresses_0', 'publicuser_rank', 'tags_1_lastusedat', 'tags_0_value', 'publicuser_addresses_1', 'onchaininfo_votemetrics_nay_value', 'onchaininfo_votemetrics_support_value', 'onchaininfo_hash', 'onchaininfo_reward', 'publicuser_id', 'onchaininfo_description', 'publicuser_addresses_4', 'history_1_createdat_seconds', 'onchaininfo_curator', 'history_2_createdat_nanoseconds', 'publicuser_createdat', 'publicuser_username', 'tags_2_network']
+
+            Very very Important Rule:
+            - For every query you generate, you must add a filter of source_proposal_type = 'ReferendumV2' unless, otherwise, specified that somebody needs info on ChildBounty, FellowshipReferendum and Bounty.
+            
+            Natural Language Query: {natural_query}
+            
+            SQL Query:
+            """
+        
+        last_error = None
+        last_sql_queries = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Prepare system prompt for this attempt
+                if attempt == 0:
+                    # First attempt - use base prompt
+                    system_prompt = base_system_prompt
+                else:
+                    # Retry attempts - add error information
+                    error_feedback = f"""
+                    
+ERROR CORRECTION ATTEMPT {attempt}:
+The previous SQL query generated was incorrect and could not be executed. Please correct the query based on the error information below.
+
+PREVIOUS FAILED QUERIES:
+{last_sql_queries}
+
+EXECUTION ERROR:
+{last_error}
+
+Please analyze the error and generate corrected SQL queries that will execute successfully. Pay special attention to:
+1. Column names and table references
+2. SQL syntax correctness
+3. Data type compatibility
+4. Proper use of quotes and escaping
+5. Correct JOIN syntax if applicable
+
+Generate the corrected SQL queries as a JSON array:
+"""
+                    system_prompt = base_system_prompt + error_feedback
+                
+                # Trim prompt to fit token limits
+                system_prompt = self.trim_prompt_to_fit_tokens(system_prompt)
+                
+                # Generate SQL using the configured model
+                response_content = self._generate_sql_with_model(system_prompt)
+                
+                # Clean up the response
+                response_content = response_content.replace('```json', '').replace('```sql', '').replace('```', '').strip()
+                
+                try:
+                    # Try to parse as JSON array
+                    import json
+                    sql_queries = json.loads(response_content)
+                    
+                    # Ensure it's a list
+                    if isinstance(sql_queries, str):
+                        sql_queries = [sql_queries]
+                    elif not isinstance(sql_queries, list):
+                        sql_queries = [str(sql_queries)]
+                        
+                    logger.info(f"Generated {len(sql_queries)} SQL queries (attempt {attempt + 1}): {sql_queries}")
+                    
+                    # Try to execute the queries
+                    try:
+                        all_results = self.execute_sql_queries(sql_queries)
+                        # If we get here, queries executed successfully
+                        logger.info(f"SQL queries executed successfully on attempt {attempt + 1}")
+                        return sql_queries, all_results
+                        
+                    except Exception as exec_error:
+                        # Query execution failed, store error for retry
+                        last_error = str(exec_error)
+                        last_sql_queries = sql_queries
+                        logger.warning(f"SQL execution failed on attempt {attempt + 1}: {exec_error}")
+                        
+                        if attempt == max_retries - 1:
+                            # Last attempt failed, raise the error
+                            logger.error(f"All {max_retries} attempts failed. Raising execution error.")
+                            raise exec_error
+                        else:
+                            # Continue to next attempt
+                            continue
+                    
+                except json.JSONDecodeError:
+                    # JSON parsing failed
+                    last_error = "Failed to parse response as JSON"
+                    last_sql_queries = [response_content]
+                    logger.warning(f"JSON parsing failed on attempt {attempt + 1}")
+                    
+                    if attempt == max_retries - 1:
+                        # Last attempt, try to execute as single query
+                        logger.error(f"All {max_retries} attempts failed. Trying single query execution.")
+                        try:
+                            single_query = response_content.strip()
+                            all_results = self.execute_sql_queries([single_query])
+                            return [single_query], all_results
+                        except Exception as e:
+                            raise e
+                    else:
+                        continue
+                        
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"Error in attempt {attempt + 1}: {e}")
+                
+                if attempt == max_retries - 1:
+                    # Last attempt failed
+                    raise e
+                else:
+                    continue
+        
+        # This should not be reached, but just in case
+        raise Exception(f"Failed to generate and execute valid SQL after {max_retries} attempts")
     
     def test_connection(self) -> bool:
         """Test database connection"""
@@ -1307,24 +1433,25 @@ class VoteQuery2SQL:
         # Approximate token counting (1 token ≈ 4 characters for English)
         return len(text) // 4
     
-    def trim_prompt_to_fit_tokens(self, system_prompt: str, max_tokens: int = 8192, completion_tokens: int = 800, buffer_tokens: int = 200) -> str:
+    def trim_prompt_to_fit_tokens(self, system_prompt: str, max_tokens: int = 20000, completion_tokens: int = 1000, buffer_tokens: int = 500) -> str:
         """
         Trim the system prompt to fit within token limits
         """
-        # Calculate available tokens for the prompt
-        available_tokens = max_tokens - completion_tokens - buffer_tokens
-        
         # Count current tokens
         current_tokens = self.count_tokens(system_prompt)
         
-        logger.info(f"VoteQuery2SQL Token analysis - Current: {current_tokens}, Available: {available_tokens}, Max: {max_tokens}")
-        
         # If within limits, return as-is
-        if current_tokens <= available_tokens:
+        if current_tokens <= max_tokens:
+            logger.info(f"VoteQuery2SQL Token analysis - Current: {current_tokens}, Max: {max_tokens} - No trimming needed")
             return system_prompt
         
-        # Need to trim - calculate target length
-        target_length = int(len(system_prompt) * (available_tokens / current_tokens))
+        # Calculate target tokens (95% of max_tokens)
+        target_tokens = int(max_tokens * 0.95)
+        
+        logger.info(f"VoteQuery2SQL Token analysis - Current: {current_tokens}, Max: {max_tokens}, Target: {target_tokens} - Trimming needed")
+        
+        # Calculate target length based on token ratio
+        target_length = int(len(system_prompt) * (target_tokens / current_tokens))
         
         # Simple trimming for voting queries (keep essential parts)
         lines = system_prompt.split('\n')
@@ -1342,7 +1469,7 @@ class VoteQuery2SQL:
         
         trimmed_prompt = '\n'.join(trimmed_lines)
         final_tokens = self.count_tokens(trimmed_prompt)
-        logger.info(f"VoteQuery2SQL Prompt trimmed: {current_tokens} -> {final_tokens} tokens (target: {available_tokens})")
+        logger.info(f"VoteQuery2SQL Prompt trimmed: {current_tokens} -> {final_tokens} tokens (target: {target_tokens})")
         
         return trimmed_prompt
 
@@ -1420,169 +1547,16 @@ class VoteQuery2SQL:
                 raise e
 
     def generate_sql_query_for_voting(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> List[str]:
-        """Convert natural language query to SQL for voting data"""
+        """Convert natural language query to SQL for voting data with error correction"""
         try:
-            system_prompt = f"""
-You are a PostgreSQL expert specializing in voting data analysis. Convert natural language queries into optimized SQL queries for voting data.
-
-DATABASE SCHEMA:
-Main Table: {self.table_name}
-{self.table_schema}
-
-Related Table: conviction_vote
-- Contains "self_voting_power" (voting power/balance for each vote)
-- Joined via "parent_vote_id" (foreign key in {self.table_name}) → "id" (primary key in conviction_vote)
-
-CORE SQL GUIDELINES:
-1. Use ONLY existing columns from the schema above.
-2. Main table name: {self.table_name}
-3. Use proper PostgreSQL syntax with double quotes for column names.
-4. Apply appropriate LIMIT clauses (typically 10 for lists; no LIMIT for counts/aggregates).
-5. Always order explicitly when returning recent items (e.g., ORDER BY main."created_at" DESC).
-
-JOIN REQUIREMENTS:
-6. When querying voting power/balance, JOIN with conviction_vote table:
-   FROM {self.table_name} AS main
-   LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
-7. Use "cv.self_voting_power" for all voting power queries (replaces "balance").
-8. Always use table aliases (main, cv) to avoid ambiguity.
-
-VOTING DATA SPECIFIC RULES:
-9. Voter information: Use "main.voter".
-10. Proposal identification: Use "main.proposal_index" or "main.proposal_id" for proposal/referendum IDs.
-11. Voting decisions: Use "main.decision" (values like 'aye', 'nay', 'abstain' — case-insensitive compare with ILIKE when needed).
-12. Voting power: Use "cv.self_voting_power" (FLOAT). When querying voting power, always include the JOIN with conviction_vote.
-13. Delegation: Use "main.is_delegated" (BOOLEAN) and "main.delegated_to" for target account.
-14. Date filtering: Use "main.created_at" for when the vote was cast; use "main.removed_at" to exclude revoked/invalidated votes (e.g., WHERE main."removed_at" IS NULL for "active" votes).
-15. Proposal types: Use "main.type" (e.g., 'ReferendumV2', 'Treasury', 'Fellowship').
-16. Lock period / conviction: Use "main.lock_period" for conviction or lock-time–related queries.
-
-CRITICAL NULL VALUE HANDLING:
-17. Many columns may be NULL — add IS NOT NULL when the query semantically requires a value.
-18. For voting power queries: ALWAYS add "cv.self_voting_power IS NOT NULL" and include JOIN with conviction_vote.
-19. For date-based queries: Consider adding "main.created_at IS NOT NULL".
-20. When filtering by proposal or voter, consider "main.proposal_index IS NOT NULL" and/or "main.voter IS NOT NULL" as appropriate.
-
-MULTIPLE QUERIES STRATEGY:
-- If the user asks for COUNT and EXAMPLES (e.g., "how many voters and show some"), return 2 queries:
-  • Query 1: COUNT query to get the total number
-  • Query 2: SELECT query to get examples with details
-- If the user asks only for a count, return 1 COUNT query.
-- If the user asks only for a list/examples, return 1 SELECT query.
-- Return queries as a JSON array: ["query1", "query2"].
-
-COLUMN SELECTION STRATEGY:
-- General lists: select key columns like "main.voter", "main.decision", "cv.self_voting_power", "main.created_at", "main.proposal_index", "main.type", "main.is_delegated".
-- Voter analysis: focus on "main.voter", "cv.self_voting_power", "main.decision", "main.is_delegated", "main.delegated_to", "main.created_at".
-- Proposal analysis: include "main.proposal_index", "main.type", "main.created_at", "main.decision", "cv.self_voting_power".
-- Avoid SELECT * unless absolutely necessary.
-
-EXAMPLE VOTING QUERIES (WITH CORRECT JOIN):
-
-Single Query Examples:
-- "Show me recent votes"
-  -> SELECT main."voter", main."decision", cv."self_voting_power", main."created_at", main."proposal_index", main."type"
-     FROM {self.table_name} AS main
-     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
-     WHERE main."created_at" IS NOT NULL
-     ORDER BY main."created_at" DESC
-     LIMIT 10;
-
-- "How many voters in July 2025?"
-  -> SELECT COUNT(DISTINCT main."voter") AS unique_voters
-     FROM {self.table_name} AS main
-     WHERE main."created_at" IS NOT NULL
-       AND DATE_TRUNC('month', main."created_at") = '2025-07-01';
-
-- "Voters with more than 1000 DOT voting power"
-  -> SELECT main."voter", cv."self_voting_power"
-     FROM {self.table_name} AS main
-     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
-     WHERE cv."self_voting_power" IS NOT NULL
-       AND cv."self_voting_power" > 1000
-     ORDER BY cv."self_voting_power" DESC
-     LIMIT 10;
-
-- "Votes on proposal 123"
-  -> SELECT main."voter", main."decision", cv."self_voting_power", main."created_at"
-     FROM {self.table_name} AS main
-     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
-     WHERE main."proposal_index" = 123;
-
-- "Show delegated votes"
-  -> SELECT main."voter", main."delegated_to", main."decision", cv."self_voting_power", main."proposal_index"
-     FROM {self.table_name} AS main
-     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
-     WHERE main."is_delegated" = TRUE
-     LIMIT 10;
-
-- "Active votes only (exclude removed)"
-  -> SELECT main."voter", main."decision", cv."self_voting_power", main."created_at", main."proposal_index"
-     FROM {self.table_name} AS main
-     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
-     WHERE main."removed_at" IS NULL
-     ORDER BY main."created_at" DESC
-     LIMIT 10;
-
-- "Votes with conviction lock period >= 4"
-  -> SELECT main."voter", main."decision", cv."self_voting_power", main."lock_period", main."proposal_index"
-     FROM {self.table_name} AS main
-     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
-     WHERE main."lock_period" IS NOT NULL AND main."lock_period" >= 4
-     ORDER BY main."lock_period" DESC
-     LIMIT 10;
-
-- "Top voters by voting power"
-  -> SELECT main."voter", SUM(cv."self_voting_power") AS total_voting_power, COUNT(*) AS vote_count
-     FROM {self.table_name} AS main
-     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
-     WHERE cv."self_voting_power" IS NOT NULL
-     GROUP BY main."voter"
-     ORDER BY total_voting_power DESC
-     LIMIT 10;
-
-Multiple Query Example:
-- "How many voters in July and show some?"
-  -> [
-       "SELECT COUNT(DISTINCT main.\"voter\") AS total_voters FROM {self.table_name} AS main WHERE main.\"created_at\" IS NOT NULL AND DATE_TRUNC('month', main.\"created_at\") = '2025-07-01';",
-       "SELECT main.\"voter\", main.\"decision\", cv.\"self_voting_power\", main.\"created_at\", main.\"proposal_index\" FROM {self.table_name} AS main LEFT JOIN conviction_vote AS cv ON main.\"parent_vote_id\" = cv.\"id\" WHERE main.\"created_at\" IS NOT NULL AND DATE_TRUNC('month', main.\"created_at\") = '2025-07-01' ORDER BY main.\"created_at\" DESC LIMIT 10;"
-     ]
-
-Natural Language Query: {natural_query}
-
-SQL Query:
-"""
-            
-            # Use the configured model (Gemini or ChatGPT) for voting data
-            response_content = self._generate_sql_with_model(system_prompt)
-            
-            # Clean up the response
-            response_content = response_content.replace('```json', '').replace('```sql', '').replace('```', '').strip()
-            
-            try:
-                # Try to parse as JSON array
-                import json
-                sql_queries = json.loads(response_content)
-                
-                # Ensure it's a list
-                if isinstance(sql_queries, str):
-                    sql_queries = [sql_queries]
-                elif not isinstance(sql_queries, list):
-                    sql_queries = [str(sql_queries)]
-                    
-                logger.info(f"Generated {len(sql_queries)} SQL queries for voting data: {sql_queries}")
-                return sql_queries
-                
-            except json.JSONDecodeError:
-                # Fallback: treat as single query
-                logger.warning("Could not parse JSON, treating as single query")
-                single_query = response_content.strip()
-                logger.info(f"Generated single SQL query for voting data: {single_query}")
-                return [single_query]
+            # Generate initial SQL queries with retry mechanism
+            sql_queries = self._generate_voting_sql_with_retry(natural_query, conversation_history)
+            return sql_queries
             
         except Exception as e:
             logger.error(f"Error generating SQL query for voting data: {e}")
             return ["SELECT COUNT(*) FROM voting_data;"]  # Fallback query
+
 
     def execute_sql_query(self, sql_query: str) -> Tuple[List[List[Any]], List[str]]:
         """Execute SQL query and return results with column names"""
@@ -1622,13 +1596,28 @@ SQL Query:
             if not results:
                 return f"I didn't find any voting records matching your query '{natural_query}'. This could mean there are no votes matching your criteria, or the voting data might not contain the specific information you're looking for."
             
+            # Check if total_count is available from window function
+            total_count_from_window = None
+            if results and len(results) > 0 and len(results[0]) > 0:
+                # Check if total_count is in the last column (window function result)
+                if 'total_count' in str(results[0]):
+                    # Find the total_count column index
+                    for i, col in enumerate(columns):
+                        if 'total_count' in col.lower():
+                            total_count_from_window = results[0][i]
+                            break
+            
+            # Use window function count if available, otherwise use result count
+            actual_total_count = total_count_from_window if total_count_from_window is not None else len(results)
+            
             # Convert results to a more readable format
-            if len(results) <= 20:  # For small result sets, include details
-                results_summary = f"Found {len(results)} voting records"
-                sample_data = results[:10]  # Show first 10 results
+            displayed_count = min(10, len(results))
+            if actual_total_count <= displayed_count:  # For small result sets, include details
+                results_summary = f"Found {actual_total_count} voting records"
+                sample_data = results[:displayed_count]
             else:
-                results_summary = f"Found {len(results)} voting records (showing first 10)"
-                sample_data = results[:10]
+                results_summary = f"Found {actual_total_count} voting records (showing few due to length)"
+                sample_data = results[:displayed_count]
             
             # Determine response style based on conversation history
             has_context = conversation_history and len(conversation_history) > 0
@@ -1667,9 +1656,10 @@ SQL Query:
                - The question is complex and requires context to understand
             4. AVOID SPECULATION: Don't add "could suggest" or "might indicate" unless specifically asked for analysis
             5. NUMBERS: Present key numbers clearly but don't over-explain their significance unless asked
-            6. If you receive proposal_index in result. Then you should must make a link like below:
+            6. RESULT LIMITATION: If there are more results than displayed, mention this limitation in your response. Say something like "I found X voting records, but due to the large amount of data, I'm only displaying a few here." Always include the exact count of total results found.
+            7. If you receive proposal_index in result. Then you should must make a link like below:
                 - https://polkadot.polkassembly.io/referenda/{{proposal_index}} 
-            7. When you receive voting self_voting_power, then always remove 9 zero from it. For ex: 10000000000 becomes 1 DOT. DOT is the unit here.
+            8. When you receive voting self_voting_power, then always remove 9 zero from it. For ex: 10000000000 becomes 1 DOT. DOT is the unit here.
                
             
             EXAMPLES:
@@ -1684,7 +1674,7 @@ SQL Query:
             """
             
             # Trim prompt to fit token limits
-            context_prompt = self.trim_prompt_to_fit_tokens(context_prompt, max_tokens=8192, completion_tokens=800, buffer_tokens=200)
+            context_prompt = self.trim_prompt_to_fit_tokens(context_prompt)
             
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
@@ -1707,17 +1697,17 @@ SQL Query:
             return f"I found {len(results)} voting records for your query '{natural_query}', but I'm having trouble formatting the response. Here's a summary: The query returned {len(results)} rows from the voting database."
 
     def process_query(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-        """Main method to process a natural language query for voting data"""
+        """Main method to process a natural language query for voting data with error correction"""
         try:
             logger.info(f"Processing voting query: {natural_query}")
             
-            # Step 1: Generate SQL queries (can be multiple)
-            sql_queries = self.generate_sql_query_for_voting(natural_query, conversation_history)
+            # Step 1: Generate and execute SQL queries with error correction
+            sql_queries, all_results = self._generate_and_execute_voting_with_retry(natural_query, conversation_history)
             
-            # Step 2: Execute SQL queries
+            # Step 2: Process results
             if len(sql_queries) == 1:
                 # Single query
-                results, columns = self.execute_sql_query(sql_queries[0])
+                results, columns = all_results[0]
                 
                 # Step 3: Generate natural language response
                 natural_response = self.generate_natural_response(
@@ -1737,8 +1727,6 @@ SQL Query:
                 }
             else:
                 # Multiple queries
-                all_results = self.execute_sql_queries(sql_queries)
-                
                 # Combine all results for response
                 combined_results = []
                 combined_columns = []
@@ -1776,11 +1764,283 @@ SQL Query:
                 "result_count": 0,
                 "results": [],
                 "columns": [],
-                "natural_response": f"I'm having trouble processing your voting query. Please try again or rephrase your question.",
+                "natural_response": "I'm sorry, I encountered an error processing your voting query. Please try rephrasing your question or try again later.",
                 "success": False,
                 "error": str(e),
                 "table": "voting_data"
             }
+
+    def _generate_and_execute_voting_with_retry(self, natural_query: str, conversation_history: Optional[List[Dict[str, Any]]] = None, max_retries: int = 3) -> Tuple[List[str], List[Tuple[List[List[Any]], List[str]]]]:
+        """Generate SQL queries and execute them with error correction and retry mechanism for voting data"""
+        
+        # Base system prompt for voting data
+        base_system_prompt = f"""
+You are a PostgreSQL expert specializing in voting data analysis. Convert natural language queries into optimized SQL queries for voting data.
+
+DATABASE SCHEMA:
+Main Table: {self.table_name}
+{self.table_schema}
+
+Related Table: conviction_vote
+- Contains "self_voting_power" (voting power/balance for each vote)
+- Joined via "parent_vote_id" (foreign key in {self.table_name}) → "id" (primary key in conviction_vote)
+
+CORE SQL GUIDELINES:
+1. Use ONLY existing columns from the schema above.
+2. Main table name: {self.table_name}
+3. Use proper PostgreSQL syntax with double quotes for column names.
+4. Apply appropriate LIMIT clauses (typically 10 for lists; no LIMIT for counts/aggregates).
+5. Always order explicitly when returning recent items (e.g., ORDER BY main."created_at" DESC).
+6. AUTOMATIC NULL HANDLING: For ANY column used in WHERE, ORDER BY, or filtering conditions, ALWAYS add "column_name IS NOT NULL" to avoid NULL values.
+
+JOIN REQUIREMENTS:
+6. When querying voting power/balance, JOIN with conviction_vote table:
+   FROM {self.table_name} AS main
+   LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+7. Use "cv.self_voting_power" for all voting power queries (replaces "balance").
+8. Always use table aliases (main, cv) to avoid ambiguity.
+
+VOTING DATA SPECIFIC RULES:
+9. Voter information: Use "main.voter".
+10. Proposal identification: Use "main.proposal_index" or "main.proposal_id" for proposal/referendum IDs.
+11. Voting decisions: Use "main.decision" (values like 'aye', 'nay', 'abstain' — case-insensitive compare with ILIKE when needed).
+12. Voting power: Use "cv.self_voting_power" (FLOAT). When querying voting power, always include the JOIN with conviction_vote.
+13. Delegation: Use "main.is_delegated" (BOOLEAN) and "main.delegated_to" for target account.
+14. Date filtering: Use "main.created_at" for when the vote was cast; use "main.removed_at" to exclude revoked/invalidated votes (e.g., WHERE main."removed_at" IS NULL for "active" votes).
+15. Proposal types: Use "main.type" (e.g., 'ReferendumV2', 'Treasury', 'Fellowship').
+16. Lock period / conviction: Use "main.lock_period" for conviction or lock-time–related queries.
+
+CRITICAL NULL VALUE HANDLING:
+17. Many columns may be NULL — ALWAYS add IS NOT NULL for any column used in filtering, ordering, or sorting.
+18. For voting power queries: ALWAYS add "cv.self_voting_power IS NOT NULL" and include JOIN with conviction_vote.
+19. For date-based queries: ALWAYS add "main.created_at IS NOT NULL" when filtering or ordering by date.
+20. For text searches: ALWAYS add IS NOT NULL for the column being searched.
+21. For ordering/sorting: ALWAYS add IS NOT NULL for the column being ordered by (e.g., ORDER BY "created_at" requires "created_at" IS NOT NULL).
+22. For any WHERE conditions: ALWAYS add IS NOT NULL for the column being filtered.
+23. When filtering by proposal or voter: ALWAYS add "main.proposal_index IS NOT NULL" and/or "main.voter IS NOT NULL".
+
+MANDATORY NULL HANDLING RULES FOR VOTING DATA:
+- If you use a column in WHERE clause: add "column_name IS NOT NULL"
+- If you use a column in ORDER BY clause: add "column_name IS NOT NULL" OR use "NULLS LAST"
+- If you use a column in GROUP BY clause: add "column_name IS NOT NULL"
+- If you use a column in HAVING clause: add "column_name IS NOT NULL"
+- This applies to ALL columns, not just specific ones
+- For ORDER BY: Prefer "IS NOT NULL" in WHERE clause, but if you must include NULLs, use "NULLS LAST"
+
+MULTIPLE QUERIES STRATEGY:
+- If the user asks for COUNT and EXAMPLES (e.g., "how many voters and show some"), return 2 queries:
+  • Query 1: COUNT query to get the total number
+  • Query 2: SELECT query to get examples with details
+- If the user asks only for a count, return 1 COUNT query.
+- If the user asks only for a list/examples, return 1 SELECT query.
+- Return queries as a JSON array: ["query1", "query2"].
+
+COLUMN SELECTION STRATEGY:
+- General lists: select key columns like "main.voter", "main.decision", "cv.self_voting_power", "main.created_at", "main.proposal_index", "main.type", "main.is_delegated".
+- Voter analysis: focus on "main.voter", "cv.self_voting_power", "main.decision", "main.is_delegated", "main.delegated_to", "main.created_at".
+- Proposal analysis: include "main.proposal_index", "main.type", "main.created_at", "main.decision", "cv.self_voting_power".
+- Avoid SELECT * unless absolutely necessary.
+
+WINDOW FUNCTION FOR COUNT:
+- When using LIMIT clause, ALWAYS include COUNT(*) OVER() as total_count to get the total number of matching records
+- This allows showing "Found X voting records, displaying few" with accurate total count
+- Example: SELECT main."voter", main."decision", cv."self_voting_power", COUNT(*) OVER() as total_count FROM table WHERE conditions ORDER BY created_at DESC LIMIT 10;
+
+ORDER BY NULL HANDLING EXAMPLE:
+- WRONG: SELECT * FROM table WHERE conditions ORDER BY "created_at" DESC
+- CORRECT: SELECT * FROM table WHERE conditions AND "created_at" IS NOT NULL ORDER BY "created_at" DESC
+- ALWAYS add IS NOT NULL for the ORDER BY column in the WHERE clause
+- ALTERNATIVE: Use NULLS LAST to push NULL values to bottom: ORDER BY "created_at" DESC NULLS LAST
+
+EXAMPLE VOTING QUERIES (WITH CORRECT JOIN):
+
+Single Query Examples:
+- "Show me recent votes"
+  -> SELECT main."voter", main."decision", cv."self_voting_power", main."created_at", main."proposal_index", main."type", COUNT(*) OVER() as total_count
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."created_at" IS NOT NULL AND main."voter" IS NOT NULL
+     ORDER BY main."created_at" DESC
+     LIMIT 10;
+
+- "How many voters in July 2025?"
+  -> SELECT COUNT(DISTINCT main."voter") AS unique_voters
+     FROM {self.table_name} AS main
+     WHERE main."created_at" IS NOT NULL AND main."voter" IS NOT NULL
+       AND DATE_TRUNC('month', main."created_at") = '2025-07-01';
+
+- "Voters with more than 1000 DOT voting power"
+  -> SELECT main."voter", cv."self_voting_power", COUNT(*) OVER() as total_count
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE cv."self_voting_power" IS NOT NULL AND main."voter" IS NOT NULL
+       AND cv."self_voting_power" > 1000
+     ORDER BY cv."self_voting_power" DESC
+     LIMIT 10;
+
+- "Votes on proposal 123"
+  -> SELECT main."voter", main."decision", cv."self_voting_power", main."created_at", COUNT(*) OVER() as total_count
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."proposal_index" = 123 AND main."proposal_index" IS NOT NULL AND main."voter" IS NOT NULL;
+
+- "Show delegated votes"
+  -> SELECT main."voter", main."delegated_to", main."decision", cv."self_voting_power", main."proposal_index", COUNT(*) OVER() as total_count
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."is_delegated" = TRUE AND main."voter" IS NOT NULL
+     LIMIT 10;
+
+- "Active votes only (exclude removed)"
+  -> SELECT main."voter", main."decision", cv."self_voting_power", main."created_at", main."proposal_index", COUNT(*) OVER() as total_count
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."removed_at" IS NULL AND main."created_at" IS NOT NULL AND main."voter" IS NOT NULL
+     ORDER BY main."created_at" DESC
+     LIMIT 10;
+
+- "Votes with conviction lock period >= 4"
+  -> SELECT main."voter", main."decision", cv."self_voting_power", main."lock_period", main."proposal_index", COUNT(*) OVER() as total_count
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE main."lock_period" IS NOT NULL AND main."lock_period" >= 4 AND main."voter" IS NOT NULL
+     ORDER BY main."lock_period" DESC
+     LIMIT 10;
+
+- "Top voters by voting power"
+  -> SELECT main."voter", SUM(cv."self_voting_power") AS total_voting_power, COUNT(*) AS vote_count, COUNT(*) OVER() as total_count
+     FROM {self.table_name} AS main
+     LEFT JOIN conviction_vote AS cv ON main."parent_vote_id" = cv."id"
+     WHERE cv."self_voting_power" IS NOT NULL AND main."voter" IS NOT NULL
+     GROUP BY main."voter"
+     ORDER BY total_voting_power DESC
+     LIMIT 10;
+
+- "Show me all votes ordered by date"
+  -> SELECT main."voter", main."decision", main."created_at", COUNT(*) OVER() as total_count
+     FROM {self.table_name} AS main
+     ORDER BY main."created_at" DESC NULLS LAST
+     LIMIT 10;
+
+Multiple Query Example:
+- "How many voters in July and show some?"
+  -> [
+       "SELECT COUNT(DISTINCT main.\"voter\") AS total_voters FROM {self.table_name} AS main WHERE main.\"created_at\" IS NOT NULL AND main.\"voter\" IS NOT NULL AND DATE_TRUNC('month', main.\"created_at\") = '2025-07-01';",
+       "SELECT main.\"voter\", main.\"decision\", cv.\"self_voting_power\", main.\"created_at\", main.\"proposal_index\", COUNT(*) OVER() as total_count FROM {self.table_name} AS main LEFT JOIN conviction_vote AS cv ON main.\"parent_vote_id\" = cv.\"id\" WHERE main.\"created_at\" IS NOT NULL AND main.\"voter\" IS NOT NULL AND DATE_TRUNC('month', main.\"created_at\") = '2025-07-01' ORDER BY main.\"created_at\" DESC LIMIT 10;"
+     ]
+
+Natural Language Query: {natural_query}
+
+SQL Query:
+"""
+        
+        last_error = None
+        last_sql_queries = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Prepare system prompt for this attempt
+                if attempt == 0:
+                    # First attempt - use base prompt
+                    system_prompt = base_system_prompt
+                else:
+                    # Retry attempts - add error information
+                    error_feedback = f"""
+                    
+ERROR CORRECTION ATTEMPT {attempt}:
+The previous SQL query generated was incorrect and could not be executed. Please correct the query based on the error information below.
+
+PREVIOUS FAILED QUERIES:
+{last_sql_queries}
+
+EXECUTION ERROR:
+{last_error}
+
+Please analyze the error and generate corrected SQL queries that will execute successfully. Pay special attention to:
+1. Column names and table references
+2. SQL syntax correctness
+3. Data type compatibility
+4. Proper use of quotes and escaping
+5. Correct JOIN syntax with conviction_vote table
+6. Proper table aliases (main, cv)
+
+Generate the corrected SQL queries as a JSON array:
+"""
+                    system_prompt = base_system_prompt + error_feedback
+                
+                # Trim prompt to fit token limits
+                system_prompt = self.trim_prompt_to_fit_tokens(system_prompt)
+                
+                # Generate SQL using the configured model
+                response_content = self._generate_sql_with_model(system_prompt)
+                
+                # Clean up the response
+                response_content = response_content.replace('```json', '').replace('```sql', '').replace('```', '').strip()
+                
+                try:
+                    # Try to parse as JSON array
+                    import json
+                    sql_queries = json.loads(response_content)
+                    
+                    # Ensure it's a list
+                    if isinstance(sql_queries, str):
+                        sql_queries = [sql_queries]
+                    elif not isinstance(sql_queries, list):
+                        sql_queries = [str(sql_queries)]
+                        
+                    logger.info(f"Generated {len(sql_queries)} SQL queries for voting data (attempt {attempt + 1}): {sql_queries}")
+                    
+                    # Try to execute the queries
+                    try:
+                        all_results = self.execute_sql_queries(sql_queries)
+                        # If we get here, queries executed successfully
+                        logger.info(f"Voting SQL queries executed successfully on attempt {attempt + 1}")
+                        return sql_queries, all_results
+                        
+                    except Exception as exec_error:
+                        # Query execution failed, store error for retry
+                        last_error = str(exec_error)
+                        last_sql_queries = sql_queries
+                        logger.warning(f"Voting SQL execution failed on attempt {attempt + 1}: {exec_error}")
+                        
+                        if attempt == max_retries - 1:
+                            # Last attempt failed, raise the error
+                            logger.error(f"All {max_retries} attempts failed for voting data. Raising execution error.")
+                            raise exec_error
+                        else:
+                            # Continue to next attempt
+                            continue
+                    
+                except json.JSONDecodeError:
+                    # JSON parsing failed
+                    last_error = "Failed to parse response as JSON"
+                    last_sql_queries = [response_content]
+                    logger.warning(f"JSON parsing failed for voting data on attempt {attempt + 1}")
+                    
+                    if attempt == max_retries - 1:
+                        # Last attempt, try to execute as single query
+                        logger.error(f"All {max_retries} attempts failed for voting data. Trying single query execution.")
+                        try:
+                            single_query = response_content.strip()
+                            all_results = self.execute_sql_queries([single_query])
+                            return [single_query], all_results
+                        except Exception as e:
+                            raise e
+                    else:
+                        continue
+                        
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"Error in voting data attempt {attempt + 1}: {e}")
+                
+                if attempt == max_retries - 1:
+                    # Last attempt failed
+                    raise e
+                else:
+                    continue
+        
+        # This should not be reached, but just in case
+        raise Exception(f"Failed to generate and execute valid SQL for voting data after {max_retries} attempts")
 
 def main():
     """Example usage and testing"""
