@@ -19,6 +19,14 @@ from .slack_bot import SlackBot
 # Load environment variables
 load_dotenv()
 
+# Helper function to print model usage in green
+def print_model_usage(model_name: str, purpose: str):
+    """Print model usage information in green color"""
+    GREEN = '\033[92m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
+    print(f"{GREEN}{BOLD}🤖 Using {model_name} for {purpose}{END}")
+
 # Get Gemini timeout from environment
 GEMINI_TIMEOUT = float(os.getenv('GEMINI_TIMEOUT', '30'))
 
@@ -704,6 +712,9 @@ No explanations, no markdown, just the JSON."""
         try:
             # Use Gemini to analyze the query
             if self.gemini_client:
+                # Get the actual model name from the client
+                model_name = getattr(self.gemini_client, 'model_name', 'Gemini')
+                print_model_usage(f"{model_name}", "query routing")
                 response = self.gemini_client.get_response(analysis_prompt)
                 
                 # Try to parse JSON response
@@ -997,6 +1008,7 @@ No explanations, no markdown, just the JSON."""
             try:
                 if openai_enabled:
                     # Use OpenAI exclusively
+                    print_model_usage("GPT-3.5-turbo", "response generation (static data)")
                     logger.info("Using OpenAI for response generation")
                     response = self.client.chat.completions.create(
                         model=self.model,
@@ -1012,12 +1024,15 @@ No explanations, no markdown, just the JSON."""
                 
                 elif gemini_enabled and self.gemini_client:
                     # Use Gemini exclusively  
+                    model_name = getattr(self.gemini_client, 'model_name', 'Gemini')
+                    print_model_usage(f"{model_name}", "response generation (static data)")
                     logger.info("Using Gemini for response generation")
                     answer = self.gemini_client.get_response(system_prompt + "\n\n" + user_prompt)
                     logger.info("Gemini response received successfully")
                     
                 else:
                     # Fallback to OpenAI if no service is enabled
+                    print_model_usage("GPT-3.5-turbo", "response generation fallback (static data)")
                     logger.warning("No AI service explicitly enabled, falling back to OpenAI")
                     response = self.client.chat.completions.create(
                         model=self.model,
