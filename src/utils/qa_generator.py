@@ -796,10 +796,17 @@ No explanations, no markdown, just the JSON."""
             
             # Route query to determine data source
             logger.info(f"Routing query: '{query[:50]}...'")
-            route_result = self.route_query(query)
-            route_result_data_source = route_result.get('data_source')
-            route_result_table = route_result.get('table')
-            logger.info(f"Route result: {route_result_data_source}")
+            try:
+                route_result = self.route_query(query)
+                route_result_data_source = route_result.get('data_source')
+                route_result_table = route_result.get('table')
+                logger.info(f"Route result: {route_result_data_source}")
+            except Exception as route_error:
+                logger.error(f"Error in query routing: {route_error}")
+                # Default to static processing if routing fails
+                route_result_data_source = 'STATIC'
+                route_result_table = None
+                logger.info("Falling back to static data processing due to routing error")
             
             # Handle dynamic data source (ONCHAIN queries)
             if route_result_data_source == 'ONCHAIN':
@@ -821,20 +828,56 @@ No explanations, no markdown, just the JSON."""
                     }
                 except Exception as e:
                     logger.error(f"Error in SQL query processing: {e}")
-                    # Fallback to static response if SQL query fails
-                    logger.info("Falling back to static data processing due to SQL error")
-                    # Continue to static processing below
+                    # Return user-friendly error response instead of continuing to static processing
+                    return {
+                        'answer': "I'm sorry, I encountered an error processing your database query. Please try rephrasing your question or try again later.",
+                        'sources': [],
+                        'chunks_used': 0,
+                        'search_method': 'sql_error_fallback',
+                        'sql_query': [],
+                        'result_count': 0,
+                        'success': False,
+                        'follow_up_questions': [
+                            "How does Polkadot's governance system work?",
+                            "What are the benefits of staking DOT tokens?",
+                            "How do parachains connect to Polkadot?"
+                        ]
+                    }
             
             # Continue with static data processing (existing logic)
             
             # Analyze query with conversation history for memory/context awareness (STATIC queries only)
-            analyzed_query = self.analyze_query_with_memory(query, conversation_history)
-            logger.info(f"Using analyzed query for static processing: '{analyzed_query}...'")
+            try:
+                analyzed_query = self.analyze_query_with_memory(query, conversation_history)
+                logger.info(f"Using analyzed query for static processing: '{analyzed_query}...'")
+            except Exception as analysis_error:
+                logger.warning(f"Error in query analysis: {analysis_error}")
+                # Use original query if analysis fails
+                analyzed_query = query
+                logger.info("Using original query due to analysis error")
             
             # Create context from chunks (increased length limit for large chunks)
-            context = self.create_context_from_chunks(chunks, max_context_length=8000)
-            print("context from chunks", context)
-            print("context after strip", context.strip())
+            try:
+                context = self.create_context_from_chunks(chunks, max_context_length=8000)
+                print("context from chunks", context)
+                print("context after strip", context.strip())
+            except Exception as context_error:
+                logger.error(f"Error creating context from chunks: {context_error}")
+                # Return error response if context creation fails
+                return {
+                    'answer': "I'm sorry, I encountered an error processing your request. Please try again.",
+                    'sources': [],
+                    'confidence': 0.0,
+                    'context_used': False,
+                    'model_used': 'error',
+                    'chunks_used': len(chunks),
+                    'follow_up_questions': [
+                        "How does Polkadot's governance system work?",
+                        "What are the benefits of staking DOT tokens?",
+                        "How do parachains connect to Polkadot?"
+                    ],
+                    'search_method': 'context_error'
+                }
             
             # Check if we have sufficient context
             has_sufficient_context = (
@@ -906,17 +949,44 @@ No explanations, no markdown, just the JSON."""
             
             # Get memory context if memory is enabled
             memory_context = ""
-            if self.memory_manager and self.memory_manager.enabled:
-                memory_context = self.memory_manager.get_memory_context(analyzed_query, user_id)
-                # Add analyzed query to memory
-                self.memory_manager.add_user_query(analyzed_query, user_id)
+            try:
+                if self.memory_manager and self.memory_manager.enabled:
+                    memory_context = self.memory_manager.get_memory_context(analyzed_query, user_id)
+                    # Add analyzed query to memory
+                    self.memory_manager.add_user_query(analyzed_query, user_id)
+            except Exception as memory_error:
+                logger.warning(f"Error in memory operations: {memory_error}")
+                # Continue without memory context
+                memory_context = ""
             
             # Create system prompt
-            system_prompt = custom_prompt or self._get_default_system_prompt()
+            try:
+                system_prompt = custom_prompt or self._get_default_system_prompt()
+            except Exception as system_prompt_error:
+                logger.warning(f"Error creating system prompt: {system_prompt_error}")
+                system_prompt = "You are a helpful AI assistant for Polkadot-related questions."
             
             # Create user prompt with context, memory, and analyzed query
             print("context before going to openAI prompt", context)
-            user_prompt = self._create_user_prompt(analyzed_query, context, memory_context, conversation_history)
+            try:
+                user_prompt = self._create_user_prompt(analyzed_query, context, memory_context, conversation_history)
+            except Exception as user_prompt_error:
+                logger.error(f"Error creating user prompt: {user_prompt_error}")
+                # Return error response if prompt creation fails
+                return {
+                    'answer': "I'm sorry, I encountered an error preparing your request. Please try again.",
+                    'sources': [],
+                    'confidence': 0.0,
+                    'context_used': False,
+                    'model_used': 'error',
+                    'chunks_used': len(chunks),
+                    'follow_up_questions': [
+                        "How does Polkadot's governance system work?",
+                        "What are the benefits of staking DOT tokens?",
+                        "How do parachains connect to Polkadot?"
+                    ],
+                    'search_method': 'prompt_error'
+                }
             
             # Generate response using selected AI service (exclusive)
             answer = None
@@ -924,59 +994,101 @@ No explanations, no markdown, just the JSON."""
             gemini_enabled = os.getenv("ENABLE_GEMINI", "").lower() == "true"
             system_prompt = self._get_default_system_prompt()
             
-            if openai_enabled:
-                # Use OpenAI exclusively
-                logger.info("Using OpenAI for response generation")
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens
-                )
-                answer = response.choices[0].message.content
-                logger.info("OpenAI response received successfully")
-            
-            elif gemini_enabled and self.gemini_client:
-                # Use Gemini exclusively  
-                logger.info("Using Gemini for response generation")
-                answer = self.gemini_client.get_response(system_prompt + "\n\n" + user_prompt)
-                logger.info("Gemini response received successfully")
+            try:
+                if openai_enabled:
+                    # Use OpenAI exclusively
+                    logger.info("Using OpenAI for response generation")
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens
+                    )
+                    answer = response.choices[0].message.content
+                    logger.info("OpenAI response received successfully")
                 
-            else:
-                # Fallback to OpenAI if no service is enabled
-                logger.warning("No AI service explicitly enabled, falling back to OpenAI")
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
+                elif gemini_enabled and self.gemini_client:
+                    # Use Gemini exclusively  
+                    logger.info("Using Gemini for response generation")
+                    answer = self.gemini_client.get_response(system_prompt + "\n\n" + user_prompt)
+                    logger.info("Gemini response received successfully")
+                    
+                else:
+                    # Fallback to OpenAI if no service is enabled
+                    logger.warning("No AI service explicitly enabled, falling back to OpenAI")
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens
+                    )
+                    answer = response.choices[0].message.content
+                    logger.info("OpenAI fallback response received successfully")
+            except Exception as llm_error:
+                logger.error(f"Error in LLM response generation: {llm_error}")
+                # Return a user-friendly error response
+                return {
+                    'answer': "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.",
+                    'sources': [],
+                    'confidence': 0.0,
+                    'context_used': False,
+                    'model_used': 'error',
+                    'chunks_used': len(chunks),
+                    'follow_up_questions': [
+                        "How does Polkadot's governance system work?",
+                        "What are the benefits of staking DOT tokens?",
+                        "How do parachains connect to Polkadot?"
                     ],
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens
-                )
-                answer = response.choices[0].message.content
-                logger.info("OpenAI fallback response received successfully")
+                    'search_method': 'error_fallback'
+                }
             print("--------answer without strip-------\n", answer)
             
             # Clean any example.com URLs from the response
-            answer = self.clean_example_urls(answer)
-            print("--------answer after cleaning example.com URLs-------\n", answer)
+            try:
+                answer = self.clean_example_urls(answer)
+                print("--------answer after cleaning example.com URLs-------\n", answer)
+            except Exception as clean_error:
+                logger.warning(f"Error cleaning URLs from response: {clean_error}")
+                # Continue with original answer
             
             # Add assistant response to memory if memory is enabled
-            if self.memory_manager and self.memory_manager.enabled:
-                self.memory_manager.add_assistant_response(answer, user_id)
+            try:
+                if self.memory_manager and self.memory_manager.enabled:
+                    self.memory_manager.add_assistant_response(answer, user_id)
+            except Exception as memory_error:
+                logger.warning(f"Error adding assistant response to memory: {memory_error}")
+                # Continue without memory update
             
             # Extract sources from chunks
-            sources = self._extract_sources(chunks)
+            try:
+                sources = self._extract_sources(chunks)
+            except Exception as source_error:
+                logger.warning(f"Error extracting sources: {source_error}")
+                sources = []
             
             # Estimate confidence based on number of chunks and similarity scores
-            confidence = self._estimate_confidence(chunks)
+            try:
+                confidence = self._estimate_confidence(chunks)
+            except Exception as confidence_error:
+                logger.warning(f"Error estimating confidence: {confidence_error}")
+                confidence = 0.5  # Default confidence
             
             # Generate follow-up questions
-            follow_up_questions = self._generate_follow_up_questions(query, chunks, answer)
+            try:
+                follow_up_questions = self._generate_follow_up_questions(query, chunks, answer)
+            except Exception as followup_error:
+                logger.warning(f"Error generating follow-up questions: {followup_error}")
+                follow_up_questions = [
+                    "How does Polkadot's governance system work?",
+                    "What are the benefits of staking DOT tokens?",
+                    "How do parachains connect to Polkadot?"
+                ]
             
             result = {
                 'answer': answer,
