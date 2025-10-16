@@ -16,6 +16,12 @@ from .mem0_memory import get_memory_manager, add_user_query, add_assistant_respo
 # Content guardrails now handled by Bedrock guardrails in the API endpoint
 from .slack_bot import SlackBot
 
+# Load environment variables
+load_dotenv()
+
+# Get Gemini timeout from environment
+GEMINI_TIMEOUT = float(os.getenv('GEMINI_TIMEOUT', '30'))
+
 # Import ask_question from the texttosql module
 from ..texttosql.query_api import ask_question
 
@@ -52,7 +58,7 @@ class QAGenerator:
         
         # Initialize Gemini client (optional) with timeout
         try:
-            self.gemini_client = GeminiClient(timeout=self.api_timeout)
+            self.gemini_client = GeminiClient(timeout=GEMINI_TIMEOUT)
             logger.info("Gemini client initialized successfully")
         except Exception as e:
             logger.warning(f"Gemini client initialization failed: {e}")
