@@ -16,6 +16,14 @@ from openai import OpenAI
 from contextlib import contextmanager
 import pandas as pd
 
+# Load environment variables
+load_dotenv()
+
+# Get Gemini model name and timeout from environment
+GEMINI_MODEL_NAME = os.getenv('GEMINI_MODEL_NAME', 'gemini-2.5-pro')
+GEMINI_MODEL_SQL = os.getenv('GEMINI_MODEL_SQL', 'gemini-2.5-pro')
+GEMINI_TIMEOUT = float(os.getenv('GEMINI_TIMEOUT', '30'))
+
 # Add tiktoken for token counting
 try:
     import tiktoken
@@ -83,16 +91,16 @@ class Query2SQL:
             # Initialize Gemini as fallback
             if GeminiClient is not None:
                 try:
-                    self.gemini_client = GeminiClient(model_name="gemini-2.5-pro", timeout=self.api_timeout)
-                    logger.info("Gemini 2.5 Pro initialized as fallback")
+                    self.gemini_client = GeminiClient(model_name=GEMINI_MODEL_SQL, timeout=GEMINI_TIMEOUT)
+                    logger.info(f"Gemini {GEMINI_MODEL_SQL} initialized as fallback")
                 except Exception as e:
                     logger.warning(f"Gemini fallback initialization failed: {e}")
         else:
             # Initialize Gemini as primary (default for non-chatgpt values)
             if GeminiClient is not None:
                 try:
-                    self.gemini_client = GeminiClient(model_name="gemini-2.5-pro", timeout=self.api_timeout)
-                    logger.info("Gemini 2.5 Pro initialized as primary SQL model")
+                    self.gemini_client = GeminiClient(model_name=GEMINI_MODEL_SQL, timeout=GEMINI_TIMEOUT)
+                    logger.info(f"Gemini {GEMINI_MODEL_SQL} initialized as primary SQL model")
                 except Exception as e:
                     logger.error(f"Gemini 2.5 Pro initialization failed: {e}")
                     raise ValueError("Failed to initialize Gemini 2.5 Pro. Please check GEMINI_API_KEY.")
@@ -1306,16 +1314,16 @@ class VoteQuery2SQL:
             # Initialize Gemini as fallback
             if GeminiClient is not None:
                 try:
-                    self.gemini_client = GeminiClient(model_name="gemini-2.5-pro", timeout=self.api_timeout)
-                    logger.info("Gemini 2.5 Pro initialized as fallback for voting")
+                    self.gemini_client = GeminiClient(model_name=GEMINI_MODEL_SQL, timeout=GEMINI_TIMEOUT)
+                    logger.info(f"Gemini {GEMINI_MODEL_SQL} initialized as fallback for voting")
                 except Exception as e:
                     logger.warning(f"Gemini fallback initialization failed: {e}")
         else:
             # Initialize Gemini as primary (default for non-chatgpt values)
             if GeminiClient is not None:
                 try:
-                    self.gemini_client = GeminiClient(model_name="gemini-2.5-pro", timeout=self.api_timeout)
-                    logger.info("Gemini 2.5 Pro initialized as primary SQL model for voting")
+                    self.gemini_client = GeminiClient(model_name=GEMINI_MODEL_SQL, timeout=GEMINI_TIMEOUT)
+                    logger.info(f"Gemini {GEMINI_MODEL_SQL} initialized as primary SQL model for voting")
                 except Exception as e:
                     logger.error(f"Gemini 2.5 Pro initialization failed: {e}")
                     raise ValueError("Failed to initialize Gemini 2.5 Pro. Please check GEMINI_API_KEY.")

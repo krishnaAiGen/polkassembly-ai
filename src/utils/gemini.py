@@ -24,16 +24,20 @@ def timeout_context(seconds):
 class GeminiClient:
     """A client class for interacting with Google's Gemini 2.5 Flash model."""
     
-    def __init__(self, model_name="gemini-2.5-flash-lite", timeout=None):
+    def __init__(self, model_name=None, timeout=None):
         """
         Initialize the Gemini client.
         
         Args:
-            model_name (str): The name of the Gemini model to use
+            model_name (str): The name of the Gemini model to use (defaults to GEMINI_MODEL_NAME env var)
             timeout (int): Timeout for API calls in seconds
         """
         # Load environment variables from .env file
         load_dotenv()
+        
+        # Get model name from environment if not provided
+        if model_name is None:
+            model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-pro")
         
         # Get API key from environment
         self.api_key = os.getenv("GEMINI_API_KEY")
