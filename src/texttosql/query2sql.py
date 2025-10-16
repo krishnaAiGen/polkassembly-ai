@@ -19,6 +19,60 @@ import pandas as pd
 # Load environment variables
 load_dotenv()
 
+# Add color support for logging
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter to add colors to log messages"""
+    
+    # Color codes
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    PURPLE = '\033[95m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
+    
+    def format(self, record):
+        # Add color based on log level
+        if record.levelno == logging.INFO:
+            record.msg = f"{self.GREEN}{record.msg}{self.END}"
+        elif record.levelno == logging.WARNING:
+            record.msg = f"{self.YELLOW}{record.msg}{self.END}"
+        elif record.levelno == logging.ERROR:
+            record.msg = f"{self.RED}{record.msg}{self.END}"
+        elif record.levelno == logging.DEBUG:
+            record.msg = f"{self.CYAN}{record.msg}{self.END}"
+        
+        return super().format(record)
+
+# Set up colored logging
+def setup_colored_logging():
+    """Set up colored logging for model calls"""
+    logger = logging.getLogger()
+    
+    # Create a colored formatter
+    colored_formatter = ColoredFormatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Add handler if not already present
+    if not any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers):
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(colored_formatter)
+        logger.addHandler(console_handler)
+    
+    return logger
+
+# Helper function to print model usage in green
+def print_model_usage(model_name: str, purpose: str):
+    """Print model usage information in green color"""
+    GREEN = '\033[92m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
+    print(f"{GREEN}{BOLD}🤖 Using {model_name} for {purpose}{END}")
+
 # Get Gemini model name and timeout from environment
 GEMINI_MODEL_NAME = os.getenv('GEMINI_MODEL_NAME', 'gemini-2.5-pro')
 GEMINI_MODEL_SQL = os.getenv('GEMINI_MODEL_SQL', 'gemini-2.5-pro')
@@ -424,6 +478,7 @@ class Query2SQL:
         try:
             if self.sql_model == 'chatgpt' and self.openai_client:
                 # Use ChatGPT as primary
+                print_model_usage("GPT-4", "SQL generation (governance data)")
                 logger.debug("Using ChatGPT for SQL generation")
                 response = self.openai_client.chat.completions.create(
                     model="gpt-4",
@@ -438,6 +493,7 @@ class Query2SQL:
                 
             elif self.gemini_client:
                 # Use Gemini as primary (or fallback for ChatGPT)
+                print_model_usage(f"{GEMINI_MODEL_SQL}", "SQL generation (governance data)")
                 logger.debug("Using Gemini for SQL generation")
                 
                 # Construct the full prompt for Gemini
@@ -450,10 +506,12 @@ class Query2SQL:
                     return response.strip()
                 except Exception as e:
                     # Check if it's a 503 error (model overloaded)
-                    if "503" in str(e) or "UNAVAILABLE" in str(e) or "overloaded" in str(e).lower():
+                    error_str = str(e).lower()
+                    if any(keyword in error_str for keyword in ["503", "unavailable", "overloaded", "service unavailable", "model is overloaded"]):
                         logger.warning(f"Gemini SQL model overloaded (503 error), falling back to general Gemini model: {e}")
                         # Create a fallback Gemini client with the general model
                         try:
+                            print_model_usage(f"{GEMINI_MODEL_NAME}", "SQL generation fallback (governance data)")
                             fallback_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
                             response = fallback_client.get_response(full_prompt)
                             logger.info(f"Successfully used fallback Gemini model ({GEMINI_MODEL_NAME}) for SQL generation")
@@ -467,6 +525,7 @@ class Query2SQL:
                 
             elif self.openai_client:
                 # Fallback to OpenAI if Gemini fails
+                print_model_usage("GPT-4", "SQL generation fallback (governance data)")
                 logger.debug("Using ChatGPT as fallback for SQL generation")
                 response = self.openai_client.chat.completions.create(
                     model="gpt-4",
@@ -897,15 +956,35 @@ class Query2SQL:
             # Try Gemini first as primary LLM
             if self.gemini_client is not None:
                 try:
+                    print_model_usage(f"{GEMINI_MODEL_NAME}", "natural response generation (governance data)")
                     logger.info("Using Gemini as primary LLM for natural response generation")
-                    natural_response = self.gemini_client.get_response(prompt)
+                    # Use GEMINI_MODEL_NAME for natural response generation
+                    natural_response_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
+                    natural_response = natural_response_client.get_response(prompt)
                     # logger.info(f"repsonse from gemini is: {natural_response}")
                     logger.info("Generated natural language response using Gemini")
                     # Add disclaimer for onchain data
                     disclaimer = "\n\n*The response is derived from on-chain data and may exhibit minor hallucinations. Chain-of-thought reasoning is being integrated to minimize these and enhance factual consistency, which will be available soon.*"
                     return natural_response + disclaimer
                 except Exception as gemini_error:
-                    logger.warning(f"Gemini failed, falling back to OpenAI: {gemini_error}")
+                    # Check if it's a 503 error (model overloaded)
+                    error_str = str(gemini_error).lower()
+                    if any(keyword in error_str for keyword in ["503", "unavailable", "overloaded", "service unavailable", "model is overloaded"]):
+                        logger.warning(f"Gemini model overloaded (503 error) for natural response, falling back to general Gemini model: {gemini_error}")
+                        # Create a fallback Gemini client with the general model
+                        try:
+                            print_model_usage(f"{GEMINI_MODEL_NAME}", "natural response generation fallback (governance data)")
+                            fallback_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
+                            natural_response = fallback_client.get_response(prompt)
+                            logger.info(f"Successfully used fallback Gemini model ({GEMINI_MODEL_NAME}) for natural response generation")
+                            # Add disclaimer for onchain data
+                            disclaimer = "\n\n*The response is derived from on-chain data and may exhibit minor hallucinations. Chain-of-thought reasoning is being integrated to minimize these and enhance factual consistency, which will be available soon.*"
+                            return natural_response + disclaimer
+                        except Exception as fallback_error:
+                            logger.error(f"Fallback Gemini model also failed for natural response: {fallback_error}")
+                            logger.warning(f"Gemini failed, falling back to OpenAI: {gemini_error}")
+                    else:
+                        logger.warning(f"Gemini failed, falling back to OpenAI: {gemini_error}")
             
             # Fallback to OpenAI
             logger.info("Using OpenAI for natural response generation (fallback)")
@@ -1253,6 +1332,47 @@ Generate the corrected SQL queries as a JSON array:
                 last_error = str(e)
                 logger.error(f"Error in attempt {attempt + 1}: {e}")
                 
+                # Check if it's a 503 error and we haven't tried fallback yet
+                error_str = str(e).lower()
+                if any(keyword in error_str for keyword in ["503", "unavailable", "overloaded", "service unavailable", "model is overloaded"]):
+                    logger.warning(f"503 error detected in attempt {attempt + 1}, trying fallback model")
+                    try:
+                        # Try with fallback model
+                        print_model_usage(f"{GEMINI_MODEL_NAME}", "SQL generation fallback (governance data)")
+                        fallback_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
+                        response_content = fallback_client.get_response(system_prompt)
+                        
+                        # Clean up the response
+                        response_content = response_content.replace('```json', '').replace('```sql', '').replace('```', '').strip()
+                        
+                        try:
+                            # Try to parse as JSON array
+                            import json
+                            sql_queries = json.loads(response_content)
+                            
+                            # Ensure it's a list
+                            if isinstance(sql_queries, str):
+                                sql_queries = [sql_queries]
+                            elif not isinstance(sql_queries, list):
+                                sql_queries = [str(sql_queries)]
+                                
+                            logger.info(f"Generated {len(sql_queries)} SQL queries with fallback model: {sql_queries}")
+                            
+                            # Try to execute the queries
+                            try:
+                                all_results = self.execute_sql_queries(sql_queries)
+                                logger.info(f"SQL queries executed successfully with fallback model")
+                                return sql_queries, all_results
+                            except Exception as exec_error:
+                                logger.error(f"Fallback model also failed to execute queries: {exec_error}")
+                                # Continue to next attempt
+                        except json.JSONDecodeError:
+                            logger.error(f"Fallback model response could not be parsed as JSON")
+                            # Continue to next attempt
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback model call failed: {fallback_error}")
+                        # Continue to next attempt
+                
                 if attempt == max_retries - 1:
                     # Last attempt failed
                     raise e
@@ -1306,8 +1426,8 @@ class VoteQuery2SQL:
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
         
-        # SQL Model configuration
-        self.sql_model = os.getenv('SQL_MODEL', 'chatgpt').lower()
+        # SQL Model configuration - Use Gemini as primary for voting data
+        self.sql_model = 'gemini'  # Force Gemini as primary for voting data
         logger.info(f"SQL Model configured for voting: {self.sql_model}")
         
         # OpenAI configuration
@@ -1320,39 +1440,23 @@ class VoteQuery2SQL:
         # Timeout configuration
         self.api_timeout = float(os.getenv('API_TIMEOUT', '10'))  # Default 10 seconds
         
-        # Initialize clients based on SQL_MODEL preference
-        if self.sql_model == 'chatgpt':
-            # Initialize OpenAI as primary
-            if not self.openai_api_key:
-                raise ValueError("OPENAI_API_KEY environment variable is required when SQL_MODEL=chatgpt")
-            self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
-            logger.info("OpenAI client initialized as primary SQL model for voting")
-            
-            # Initialize Gemini as fallback
-            if GeminiClient is not None:
-                try:
-                    self.gemini_client = GeminiClient(model_name=GEMINI_MODEL_SQL, timeout=GEMINI_TIMEOUT)
-                    logger.info(f"Gemini {GEMINI_MODEL_SQL} initialized as fallback for voting")
-                except Exception as e:
-                    logger.warning(f"Gemini fallback initialization failed: {e}")
+        # Initialize Gemini as primary for voting data
+        if GeminiClient is not None:
+            try:
+                self.gemini_client = GeminiClient(model_name=GEMINI_MODEL_SQL, timeout=GEMINI_TIMEOUT)
+                logger.info(f"Gemini {GEMINI_MODEL_SQL} initialized as primary SQL model for voting")
+            except Exception as e:
+                logger.error(f"Gemini 2.5 Pro initialization failed: {e}")
+                raise ValueError("Failed to initialize Gemini 2.5 Pro. Please check GEMINI_API_KEY.")
         else:
-            # Initialize Gemini as primary (default for non-chatgpt values)
-            if GeminiClient is not None:
-                try:
-                    self.gemini_client = GeminiClient(model_name=GEMINI_MODEL_SQL, timeout=GEMINI_TIMEOUT)
-                    logger.info(f"Gemini {GEMINI_MODEL_SQL} initialized as primary SQL model for voting")
-                except Exception as e:
-                    logger.error(f"Gemini 2.5 Pro initialization failed: {e}")
-                    raise ValueError("Failed to initialize Gemini 2.5 Pro. Please check GEMINI_API_KEY.")
-            else:
-                raise ValueError("Gemini client not available. Please install required dependencies.")
-            
-            # Initialize OpenAI as fallback
-            if self.openai_api_key:
-                self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
-                logger.info("OpenAI client initialized as fallback for voting")
-            else:
-                logger.warning("OpenAI API key not provided, no fallback available for voting")
+            raise ValueError("Gemini client not available. Please install required dependencies.")
+        
+        # Initialize OpenAI as fallback
+        if self.openai_api_key:
+            self.openai_client = OpenAI(api_key=self.openai_api_key, timeout=self.api_timeout)
+            logger.info("OpenAI client initialized as fallback for voting")
+        else:
+            logger.warning("OpenAI API key not provided, no fallback available for voting")
         
         self.table_name = 'flattened_conviction_votes'
         
@@ -1499,24 +1603,11 @@ class VoteQuery2SQL:
         return trimmed_prompt
 
     def _generate_sql_with_model(self, system_prompt: str, user_message: str = None) -> str:
-        """Generate SQL using the configured model (Gemini or ChatGPT) for voting data"""
+        """Generate SQL using Gemini as primary and OpenAI as fallback for voting data"""
         try:
-            if self.sql_model == 'chatgpt' and self.openai_client:
-                # Use ChatGPT as primary
-                logger.debug("Using ChatGPT for voting SQL generation")
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-4",
-                    messages=[
-                        {"role": "system", "content": "You are a PostgreSQL expert specializing in voting data. Generate SQL queries based on the provided schema. For complex queries requiring both count and examples, return a JSON array of queries. For simple queries, return a JSON array with one query. Always return valid JSON format."},
-                        {"role": "user", "content": system_prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=800
-                )
-                return response.choices[0].message.content.strip()
-                
-            elif self.gemini_client:
-                # Use Gemini as primary (or fallback for ChatGPT)
+            if self.gemini_client:
+                # Use Gemini as primary
+                print_model_usage(f"{GEMINI_MODEL_SQL}", "SQL generation (voting data)")
                 logger.debug("Using Gemini for voting SQL generation")
                 
                 # Construct the full prompt for Gemini
@@ -1529,23 +1620,26 @@ class VoteQuery2SQL:
                     return response.strip()
                 except Exception as e:
                     # Check if it's a 503 error (model overloaded)
-                    if "503" in str(e) or "UNAVAILABLE" in str(e) or "overloaded" in str(e).lower():
+                    error_str = str(e).lower()
+                    if any(keyword in error_str for keyword in ["503", "unavailable", "overloaded", "service unavailable", "model is overloaded"]):
                         logger.warning(f"Gemini SQL model overloaded (503 error), falling back to general Gemini model for voting: {e}")
                         # Create a fallback Gemini client with the general model
                         try:
+                            print_model_usage(f"{GEMINI_MODEL_NAME}", "SQL generation fallback (voting data)")
                             fallback_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
                             response = fallback_client.get_response(full_prompt)
                             logger.info(f"Successfully used fallback Gemini model ({GEMINI_MODEL_NAME}) for voting SQL generation")
                             return response.strip()
                         except Exception as fallback_error:
                             logger.error(f"Fallback Gemini model also failed for voting: {fallback_error}")
-                            raise e  # Re-raise original error if fallback fails
+                            # Continue to OpenAI fallback below
                     else:
                         # Re-raise non-503 errors
                         raise e
                 
-            elif self.openai_client:
+            if self.openai_client:
                 # Fallback to OpenAI if Gemini fails
+                print_model_usage("GPT-4", "SQL generation fallback (voting data)")
                 logger.debug("Using ChatGPT as fallback for voting SQL generation")
                 response = self.openai_client.chat.completions.create(
                     model="gpt-4",
@@ -1718,6 +1812,45 @@ class VoteQuery2SQL:
             # Trim prompt to fit token limits
             context_prompt = self.trim_prompt_to_fit_tokens(context_prompt)
             
+            # Try Gemini first as primary LLM for voting natural response
+            if self.gemini_client is not None:
+                try:
+                    print_model_usage(f"{GEMINI_MODEL_NAME}", "natural response generation (voting data)")
+                    logger.info("Using Gemini as primary LLM for voting natural response generation")
+                    system_prompt = "You are a helpful assistant that provides concise, direct answers about voting data. Be brief and to-the-point unless the user specifically asks for detailed analysis or insights. Start with the direct answer, then add context only if needed."
+                    full_prompt = system_prompt + "\n\n" + context_prompt
+                    # Use GEMINI_MODEL_NAME for natural response generation
+                    natural_response_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
+                    natural_response = natural_response_client.get_response(full_prompt)
+                    logger.info("Generated voting natural language response using Gemini")
+                    # Add disclaimer for onchain voting data
+                    disclaimer = "\n\n*The response is derived from on-chain data and may exhibit minor hallucinations. Chain-of-thought reasoning is being integrated to minimize these and enhance factual consistency, which will be available soon.*"
+                    return natural_response + disclaimer
+                except Exception as gemini_error:
+                    # Check if it's a 503 error (model overloaded)
+                    error_str = str(gemini_error).lower()
+                    if any(keyword in error_str for keyword in ["503", "unavailable", "overloaded", "service unavailable", "model is overloaded"]):
+                        logger.warning(f"Gemini model overloaded (503 error) for voting natural response, falling back to general Gemini model: {gemini_error}")
+                        # Create a fallback Gemini client with the general model
+                        try:
+                            print_model_usage(f"{GEMINI_MODEL_NAME}", "natural response generation fallback (voting data)")
+                            fallback_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
+                            system_prompt = "You are a helpful assistant that provides concise, direct answers about voting data. Be brief and to-the-point unless the user specifically asks for detailed analysis or insights. Start with the direct answer, then add context only if needed."
+                            full_prompt = system_prompt + "\n\n" + context_prompt
+                            natural_response = fallback_client.get_response(full_prompt)
+                            logger.info(f"Successfully used fallback Gemini model ({GEMINI_MODEL_NAME}) for voting natural response generation")
+                            # Add disclaimer for onchain voting data
+                            disclaimer = "\n\n*The response is derived from on-chain data and may exhibit minor hallucinations. Chain-of-thought reasoning is being integrated to minimize these and enhance factual consistency, which will be available soon.*"
+                            return natural_response + disclaimer
+                        except Exception as fallback_error:
+                            logger.error(f"Fallback Gemini model also failed for voting natural response: {fallback_error}")
+                            logger.warning(f"Gemini failed for voting natural response, falling back to OpenAI: {gemini_error}")
+                    else:
+                        logger.warning(f"Gemini failed for voting natural response, falling back to OpenAI: {gemini_error}")
+            
+            # Fallback to OpenAI
+            print_model_usage("GPT-4", "natural response generation fallback (voting data)")
+            logger.info("Using OpenAI for voting natural response generation (fallback)")
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -2074,6 +2207,47 @@ Generate the corrected SQL queries as a JSON array:
             except Exception as e:
                 last_error = str(e)
                 logger.error(f"Error in voting data attempt {attempt + 1}: {e}")
+                
+                # Check if it's a 503 error and we haven't tried fallback yet
+                error_str = str(e).lower()
+                if any(keyword in error_str for keyword in ["503", "unavailable", "overloaded", "service unavailable", "model is overloaded"]):
+                    logger.warning(f"503 error detected in voting data attempt {attempt + 1}, trying fallback model")
+                    try:
+                        # Try with fallback model
+                        print_model_usage(f"{GEMINI_MODEL_NAME}", "SQL generation fallback (voting data)")
+                        fallback_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
+                        response_content = fallback_client.get_response(system_prompt)
+                        
+                        # Clean up the response
+                        response_content = response_content.replace('```json', '').replace('```sql', '').replace('```', '').strip()
+                        
+                        try:
+                            # Try to parse as JSON array
+                            import json
+                            sql_queries = json.loads(response_content)
+                            
+                            # Ensure it's a list
+                            if isinstance(sql_queries, str):
+                                sql_queries = [sql_queries]
+                            elif not isinstance(sql_queries, list):
+                                sql_queries = [str(sql_queries)]
+                                
+                            logger.info(f"Generated {len(sql_queries)} SQL queries for voting data with fallback model: {sql_queries}")
+                            
+                            # Try to execute the queries
+                            try:
+                                all_results = self.execute_sql_queries(sql_queries)
+                                logger.info(f"Voting SQL queries executed successfully with fallback model")
+                                return sql_queries, all_results
+                            except Exception as exec_error:
+                                logger.error(f"Fallback model also failed to execute voting queries: {exec_error}")
+                                # Continue to next attempt
+                        except json.JSONDecodeError:
+                            logger.error(f"Fallback model response could not be parsed as JSON for voting data")
+                            # Continue to next attempt
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback model call failed for voting data: {fallback_error}")
+                        # Continue to next attempt
                 
                 if attempt == max_retries - 1:
                     # Last attempt failed
