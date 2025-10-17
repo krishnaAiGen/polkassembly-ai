@@ -805,10 +805,14 @@ No explanations, no markdown, just the JSON."""
                 
                 return greeting_response
             
-            # Route query to determine data source
-            logger.info(f"Routing query: '{query[:50]}...'")
+            # Analyze query with conversation history first to get context-aware query
+            analyzed_query = self.analyze_query_with_memory(query, conversation_history)
+            logger.info(f"Original Query: {query}, Analyzed query: {analyzed_query}")
+            
+            # Route the analyzed query to determine data source
+            logger.info(f"Routing analyzed query: '{analyzed_query[:50]}...'")
             try:
-                route_result = self.route_query(query)
+                route_result = self.route_query(analyzed_query)
                 route_result_data_source = route_result.get('data_source')
                 route_result_table = route_result.get('table')
                 logger.info(f"Route result: {route_result_data_source}")
@@ -823,8 +827,6 @@ No explanations, no markdown, just the JSON."""
             if route_result_data_source == 'ONCHAIN':
                 try:
                     # Use the ask_question function from query_api with conversation history
-                    analyzed_query = self.analyze_query_with_memory(query, conversation_history)
-                    logger.info(f"Original Query: {query}, Analyzed query: {analyzed_query}")
                     sql_result = ask_question(analyzed_query, conversation_history, route_result_table)
                     
                     # Format response to match expected structure
@@ -856,16 +858,7 @@ No explanations, no markdown, just the JSON."""
                     }
             
             # Continue with static data processing (existing logic)
-            
-            # Analyze query with conversation history for memory/context awareness (STATIC queries only)
-            try:
-                analyzed_query = self.analyze_query_with_memory(query, conversation_history)
-                logger.info(f"Using analyzed query for static processing: '{analyzed_query}...'")
-            except Exception as analysis_error:
-                logger.warning(f"Error in query analysis: {analysis_error}")
-                # Use original query if analysis fails
-                analyzed_query = query
-                logger.info("Using original query due to analysis error")
+            # Note: analyzed_query is already available from the routing step above
             
             # Create context from chunks (increased length limit for large chunks)
             try:
