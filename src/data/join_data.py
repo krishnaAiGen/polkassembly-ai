@@ -41,9 +41,10 @@ def read_text_file(file_path: str) -> str:
         logger.error(f"Error reading file {file_path}: {e}")
         return ""
 
-def concatenate_directory_data(directory: str) -> Dict[str, Any]:
+def concatenate_directory_data(directory: str, combine_by_subfolder: bool = False) -> Dict[str, Any]:
     """
     Concatenate all JSON and text files in a directory and its subdirectories.
+    If combine_by_subfolder is True, combines files within each subfolder separately.
     Returns a dictionary with 'json_data' and 'text_data' keys.
     """
     if not os.path.exists(directory):
@@ -53,29 +54,78 @@ def concatenate_directory_data(directory: str) -> Dict[str, Any]:
     json_data = []
     text_data = []
 
-    for root, _, files in os.walk(directory):
-        for file in files:
-            file_path = os.path.join(root, file)
-            file_lower = file.lower()
+    if combine_by_subfolder:
+        # Process each subdirectory separately
+        subdirs = [d for d in os.listdir(directory) if os.path.isdir(os.path.join(directory, d))]
+        logger.info(f"Found {len(subdirs)} subdirectories: {subdirs}")
+        
+        for subdir in subdirs:
+            subdir_path = os.path.join(directory, subdir)
+            logger.info(f"Processing subdirectory: {subdir}")
+            
+            subdir_json_data = []
+            subdir_text_data = []
+            
+            for root, _, files in os.walk(subdir_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    file_lower = file.lower()
 
-            try:
-                if file_lower.endswith('.json'):
-                    data = read_json_file(file_path)
-                    if isinstance(data, list):
-                        json_data.extend(data)
-                    else:
-                        json_data.append(data)
-                    logger.info(f"Successfully processed JSON file: {file_path}")
+                    try:
+                        if file_lower.endswith('.json'):
+                            data = read_json_file(file_path)
+                            if isinstance(data, list):
+                                subdir_json_data.extend(data)
+                            else:
+                                subdir_json_data.append(data)
+                            logger.info(f"Successfully processed JSON file: {file_path}")
 
-                elif file_lower.endswith('.txt'):
-                    content = read_text_file(file_path)
-                    if content:
-                        text_data.append(content)
-                    logger.info(f"Successfully processed text file: {file_path}")
+                        elif file_lower.endswith('.txt'):
+                            content = read_text_file(file_path)
+                            if content:
+                                # Add file separator for better organization
+                                file_header = f"\n\n--- FILE: {os.path.basename(file_path)} ---\n"
+                                subdir_text_data.append(file_header + content)
+                            logger.info(f"Successfully processed text file: {file_path}")
 
-            except Exception as e:
-                logger.error(f"Error processing file {file_path}: {e}")
-                continue
+                    except Exception as e:
+                        logger.error(f"Error processing file {file_path}: {e}")
+                        continue
+            
+            # Combine subdirectory data
+            if subdir_text_data:
+                combined_text = f"\n\n=== {subdir.upper()} DOCUMENTATION ===\n" + "\n".join(subdir_text_data)
+                text_data.append(combined_text)
+                logger.info(f"Combined {len(subdir_text_data)} text files from {subdir}")
+            
+            if subdir_json_data:
+                json_data.extend(subdir_json_data)
+                logger.info(f"Added {len(subdir_json_data)} JSON entries from {subdir}")
+    else:
+        # Original behavior - process all files together
+        for root, _, files in os.walk(directory):
+            for file in files:
+                file_path = os.path.join(root, file)
+                file_lower = file.lower()
+
+                try:
+                    if file_lower.endswith('.json'):
+                        data = read_json_file(file_path)
+                        if isinstance(data, list):
+                            json_data.extend(data)
+                        else:
+                            json_data.append(data)
+                        logger.info(f"Successfully processed JSON file: {file_path}")
+
+                    elif file_lower.endswith('.txt'):
+                        content = read_text_file(file_path)
+                        if content:
+                            text_data.append(content)
+                        logger.info(f"Successfully processed text file: {file_path}")
+
+                except Exception as e:
+                    logger.error(f"Error processing file {file_path}: {e}")
+                    continue
 
     return {
         "json_data": json_data,
@@ -83,13 +133,13 @@ def concatenate_directory_data(directory: str) -> Dict[str, Any]:
     }
 
 def get_static_data() -> Dict[str, Any]:
-    """Get concatenated data from static data source."""
+    """Get concatenated data from static data source with subfolder combination."""
     if not static_data_source:
         logger.error("Static data source path not set")
         return {"json_data": [], "text_data": ""}
     
     logger.info(f"Processing static data from: {static_data_source}")
-    return concatenate_directory_data(static_data_source)
+    return concatenate_directory_data(static_data_source, combine_by_subfolder=True)
 
 def get_dynamic_data() -> Dict[str, Any]:
     """Get concatenated data from dynamic data source."""

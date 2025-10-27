@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def load_static_data(data_dir: str) -> List[Dict[str, Any]]:
-    """Load static data from text files"""
+    """Load and combine static data from all subfolders into single documents"""
     documents = []
     data_path = Path(data_dir)
     
@@ -30,84 +30,111 @@ def load_static_data(data_dir: str) -> List[Dict[str, Any]]:
         logger.warning(f"Data directory not found: {data_path}")
         return documents
     
-    # First, count all .txt files to show progress
-    all_txt_files = list(data_path.glob("**/*.txt"))
-    total_files = len(all_txt_files)
-    logger.info(f"Found {total_files} .txt files to process in: {data_path}")
+    # Get all subdirectories in the static_sources folder
+    subdirs = [d for d in data_path.iterdir() if d.is_dir()]
+    logger.info(f"Found {len(subdirs)} subdirectories to process: {[d.name for d in subdirs]}")
     
+    total_files = 0
     processed_count = 0
     skipped_count = 0
     
-    # Process all text files in the directory
-    for file_path in all_txt_files:
-        try:
-            processed_count += 1
-            logger.info(f"[{processed_count}/{total_files}] Processing: {file_path.relative_to(data_path)}")
-            
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            if not content.strip():
-                logger.warning(f"  └─ Skipping empty file: {file_path.name}")
-                skipped_count += 1
-                continue
+    # Process each subdirectory
+    for subdir in subdirs:
+        logger.info(f"\n📁 Processing subdirectory: {subdir.name}")
+        
+        # Get all .txt files in this subdirectory
+        txt_files = list(subdir.glob("**/*.txt"))
+        total_files += len(txt_files)
+        
+        # Combine all text files in this subdirectory into one document
+        combined_content = []
+        combined_metadata = {
+            'source': 'static_documentation',
+            'data_type': 'static',
+            'subdirectory': subdir.name,
+            'file_count': len(txt_files)
+        }
+        
+        for file_path in txt_files:
+            try:
+                processed_count += 1
+                logger.info(f"  [{processed_count}] Processing: {file_path.relative_to(data_path)}")
                 
-            # Parse metadata from file header if present
-            lines = content.split('\n')
-            metadata = {
-                'source': 'static_documentation',
-                'data_type': 'static',
-                'file_path': str(file_path),
-                'filename': file_path.name
-            }
-            
-            # Extract metadata from header lines
-            content_start = 0
-            for i, line in enumerate(lines[:10]):  # Check first 10 lines for metadata
-                if line.startswith('Title: '):
-                    metadata['title'] = line.replace('Title: ', '').strip()
-                    content_start = max(content_start, i + 1)
-                elif line.startswith('URL: '):
-                    metadata['url'] = line.replace('URL: ', '').strip()
-                    content_start = max(content_start, i + 1)
-                elif line.startswith('Description: '):
-                    metadata['description'] = line.replace('Description: ', '').strip()
-                    content_start = max(content_start, i + 1)
-                elif line.startswith('Type: '):
-                    metadata['type'] = line.replace('Type: ', '').strip()
-                    content_start = max(content_start, i + 1)
-                elif line.strip() == '---' or line.strip() == '':
-                    content_start = i + 1
-                    break
-            
-            # Use filename as title if no title found
-            if 'title' not in metadata:
-                metadata['title'] = file_path.stem
-            
-            # Extract main content (skip metadata header)
-            main_content = '\n'.join(lines[content_start:]).strip()
-            
-            if main_content:
-                documents.append({
-                    'content': main_content,
-                    'metadata': metadata
-                })
-                logger.info(f"  └─ ✅ Successfully loaded: {len(main_content)} characters, title: '{metadata.get('title', 'N/A')}'")
-            else:
-                logger.warning(f"  └─ ⚠️  No content found after parsing headers in: {file_path.name}")
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                if not content.strip():
+                    logger.warning(f"    └─ Skipping empty file: {file_path.name}")
+                    skipped_count += 1
+                    continue
+                
+                # Parse metadata from file header if present
+                lines = content.split('\n')
+                file_metadata = {}
+                content_start = 0
+                
+                # Extract metadata from header lines
+                for i, line in enumerate(lines[:10]):  # Check first 10 lines for metadata
+                    if line.startswith('Title: '):
+                        file_metadata['title'] = line.replace('Title: ', '').strip()
+                        content_start = max(content_start, i + 1)
+                    elif line.startswith('URL: '):
+                        file_metadata['url'] = line.replace('URL: ', '').strip()
+                        content_start = max(content_start, i + 1)
+                    elif line.startswith('Description: '):
+                        file_metadata['description'] = line.replace('Description: ', '').strip()
+                        content_start = max(content_start, i + 1)
+                    elif line.startswith('Type: '):
+                        file_metadata['type'] = line.replace('Type: ', '').strip()
+                        content_start = max(content_start, i + 1)
+                    elif line.strip() == '---' or line.strip() == '':
+                        content_start = i + 1
+                        break
+                
+                # Use filename as title if no title found
+                if 'title' not in file_metadata:
+                    file_metadata['title'] = file_path.stem
+                
+                # Extract main content (skip metadata header)
+                main_content = '\n'.join(lines[content_start:]).strip()
+                
+                if main_content:
+                    # Add file separator and metadata
+                    file_header = f"\n\n--- FILE: {file_metadata.get('title', file_path.stem)} ---\n"
+                    combined_content.append(file_header + main_content)
+                    logger.info(f"    └─ ✅ Added: {len(main_content)} characters, title: '{file_metadata.get('title', 'N/A')}'")
+                else:
+                    logger.warning(f"    └─ ⚠️  No content found after parsing headers in: {file_path.name}")
+                    skipped_count += 1
+                        
+            except Exception as e:
+                logger.error(f"    └─ ❌ Error loading file {file_path.name}: {e}")
                 skipped_count += 1
-                    
-        except Exception as e:
-            logger.error(f"  └─ ❌ Error loading file {file_path.name}: {e}")
-            skipped_count += 1
+        
+        # Create combined document for this subdirectory
+        if combined_content:
+            final_content = '\n'.join(combined_content)
+            combined_metadata['title'] = f"{subdir.name} Documentation"
+            combined_metadata['description'] = f"Combined documentation from {subdir.name} subdirectory"
+            combined_metadata['content_length'] = len(final_content)
+            
+            documents.append({
+                'content': final_content,
+                'metadata': combined_metadata
+            })
+            
+            logger.info(f"  └─ ✅ Created combined document: {len(final_content)} characters from {len(txt_files)} files")
+        else:
+            logger.warning(f"  └─ ⚠️  No content found in subdirectory: {subdir.name}")
     
     # Log summary
     successful_count = len(documents)
     logger.info(f"\n📊 Processing Summary:")
+    logger.info(f"  • Total subdirectories: {len(subdirs)}")
     logger.info(f"  • Total files found: {total_files}")
     logger.info(f"  • Successfully processed: {successful_count}")
     logger.info(f"  • Skipped/Failed: {skipped_count}")
-    logger.info(f"  • Success rate: {(successful_count/total_files*100):.1f}%")
+    logger.info(f"  • Success rate: {(successful_count/len(subdirs)*100):.1f}%")
     
     return documents
 
@@ -129,7 +156,8 @@ def create_static_embeddings(
     try:
         # Set default data directory if not provided
         if not data_dir:
-            data_dir = os.path.join(project_root, Config.STATIC_DATA_PATH)
+            # Use static_sources directory directly instead of joined_data/static
+            data_dir = os.path.join(project_root, "data", "static_sources")
         
         # Use config values if not provided
         chunk_size = chunk_size or Config.CHUNK_SIZE

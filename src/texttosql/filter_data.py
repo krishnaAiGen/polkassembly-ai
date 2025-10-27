@@ -49,5 +49,7 @@ governance_data_86 = governance_data_486[column_list]
 Some of the columns are not present in the governance_data_86 dataframe
 """
 
+print(f"Total number of records in the final CSV: {len(governance_data_86)}")
+print(f"Total number of columns in the final CSV: {len(governance_data_86.columns)}")
 
 governance_data_86.to_csv("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/one_table/filter_data/governance_data_86.csv", index=False)
