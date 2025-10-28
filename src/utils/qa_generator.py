@@ -306,16 +306,24 @@ class QAGenerator:
         
         query_lower = query.lower().strip()
         
-        # Check for exact matches or if query starts with greeting
+        # Check for exact matches only (no startswith to avoid false positives like "highest" matching "help")
         for keyword in greeting_keywords:
-            if query_lower == keyword or query_lower.startswith(keyword):
+            if query_lower == keyword:
                 return True
         
-        # Check for short queries that might be greetings
+        # Check for short queries that might be greetings (but exclude data queries)
         if len(query_lower.split()) <= 3:
             for keyword in greeting_keywords:
                 if keyword in query_lower:
-                    return True
+                    # Check if it's actually a data query by looking for data-related indicators
+                    data_indicators = ['number', 'count', 'total', 'sum', 'average', 'highest', 'lowest', 
+                                       'vote', 'votes', 'voter', 'proposal', 'referendum', 'treasury',
+                                       'month', 'year', 'date', 'time', 'day', 'week']
+                    has_data_indicator = any(indicator in query_lower for indicator in data_indicators)
+                    
+                    # Only treat as greeting if it doesn't contain data indicators
+                    if not has_data_indicator:
+                        return True
         
         return False
     
@@ -789,6 +797,9 @@ No explanations, no markdown, just the JSON."""
             Dictionary with answer, sources, and metadata
         """
         try:
+            # Print user query in green color
+            print(f"\033[92m📝 User Query: {query}\033[0m")
+            
             # Check if this is a greeting message
             if self._is_greeting_message(query):
                 logger.info("Detected greeting message, providing Polkassembly introduction")
