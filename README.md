@@ -1,5 +1,7 @@
 # Polkadot AI Chatbot
 
+Live bot: https://klara.polkassembly.io
+
 An AI-powered chatbot system that provides intelligent answers about the Polkadot ecosystem using RAG (Retrieval-Augmented Generation) with OpenAI embeddings and ChromaDB.
 
 ## Features
@@ -188,54 +190,6 @@ curl -X POST "http://localhost:8000/search" \
   }'
 ```
 
-## 🚀 Startup Scripts
-
-The project includes comprehensive startup and stop scripts for easy system management:
-
-### `start_pa_ai.sh` - System Startup
-Automatically starts both Redis and the API server with optimal production settings:
-
-**Features:**
-- ✅ **Redis Server**: Starts Redis with proper configuration
-- ✅ **Gunicorn Workers**: Runs API with 3 worker processes for scalability
-- ✅ **Process Management**: Tracks PIDs for proper shutdown
-- ✅ **Health Checks**: Verifies services are running correctly
-- ✅ **Comprehensive Logging**: Separate log files for each component
-- ✅ **Error Handling**: Graceful error handling and recovery
-
-**Configuration (via environment variables):**
-```bash
-export API_HOST="0.0.0.0"      # API server host
-export API_PORT="8000"         # API server port
-export WORKERS="3"             # Number of Gunicorn workers
-export REDIS_HOST="localhost"  # Redis host
-export REDIS_PORT="6379"       # Redis port
-```
-
-### `stop_pa_ai.sh` - System Shutdown
-Gracefully stops all services with multiple options:
-
-**Usage:**
-```bash
-./stop_pa_ai.sh              # Graceful shutdown
-./stop_pa_ai.sh force        # Force stop all processes
-./stop_pa_ai.sh cleanup      # Stop and clean up PID files
-./stop_pa_ai.sh status       # Show current system status
-./stop_pa_ai.sh help         # Show help information
-```
-
-### Log Files
-The startup script creates organized log files:
-- `logs/redis.log` - Redis server logs
-- `logs/api_server.log` - API server logs
-- `logs/api_server_error.log` - API error logs
-- `logs/access.log` - HTTP access logs
-
-### Process Management
-- PID files stored in `pids/` directory
-- Automatic process detection and cleanup
-- Graceful shutdown with timeout handling
-
 ## Key Configuration
 
 Main configuration options (see [setup.md](setup.md) for complete list):
@@ -250,9 +204,7 @@ Main configuration options (see [setup.md](setup.md) for complete list):
 
 ## API Documentation
 
-Once the server is running, visit:
-- **Interactive API Docs**: http://localhost:8000/docs
-- **ReDoc Documentation**: http://localhost:8000/redoc
+Refer to your deployment’s API host for documentation endpoints if enabled.
 
 ## Contributing
 
