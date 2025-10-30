@@ -134,9 +134,11 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
 
-    # File paths as per user request
-    input_file = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/voting_data/polkadot_votes_20250922_153403.json"
-    output_directory = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/voting_data"
+    # File paths from environment (do not hardcode paths)
+    from dotenv import load_dotenv
+    load_dotenv()
+    input_file = os.getenv("VOTING_DATA_INPUT_FILE", "")
+    output_directory = os.getenv("VOTING_DATA_DIR", "")
     
     if not os.path.exists(input_file):
         logger.error(f"Input file not found: {input_file}")

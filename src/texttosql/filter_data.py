@@ -3,6 +3,10 @@ The initial column contains 486 columns. It reduces to 86 columns
 """
 
 import pandas as pd
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # Load environment variables
 
 column_list = ['source_file', 'source_network', 'source_proposal_type',
        'source_row_id', 'allowedcommentor', 'content', 'createdat',
@@ -42,7 +46,7 @@ column_list = ['source_file', 'source_network', 'source_proposal_type',
        'tags_1_value', 'tags_2_lastusedat', 'tags_2_network', 'tags_2_value',
        'title', 'topic', 'updatedat', 'userid', 'onchaininfo_beneficiaries_0_assetid', 'row_index']
 
-governance_data_486 = pd.read_csv("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/one_table/combined_governance_data.csv")
+governance_data_486 = pd.read_csv(str(os.getenv("BASE_PATH")) + "/onchain_data/onchain_first_pull/one_table/combined_governance_data.csv")
 governance_data_86 = governance_data_486[column_list]
 
 """
@@ -52,4 +56,4 @@ Some of the columns are not present in the governance_data_86 dataframe
 print(f"Total number of records in the final CSV: {len(governance_data_86)}")
 print(f"Total number of columns in the final CSV: {len(governance_data_86.columns)}")
 
-governance_data_86.to_csv("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/one_table/filter_data/governance_data_86.csv", index=False)
+governance_data_86.to_csv(str(os.getenv("BASE_PATH")) + "/onchain_data/onchain_first_pull/one_table/filter_data/governance_data_86.csv", index=False)

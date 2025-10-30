@@ -1,8 +1,10 @@
 import os
 import json
 from pathlib import Path
+from dotenv import load_dotenv
 
-data_dir = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/onchain_data"
+load_dotenv()
+data_dir = os.getenv("ONCHAIN_DATA_DIR", "")
 
 def explore_onchain_data():
     """Explore and print the first index of every JSON file in the onchain_data directory"""

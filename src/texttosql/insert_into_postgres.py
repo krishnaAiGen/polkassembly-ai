@@ -606,7 +606,7 @@ CREATE TABLE {self.table_name} (
 def main():
     """Main execution function"""
     # Path to the specific CSV file to insert
-    csv_file = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/one_table/filter_data/governance_data_86.csv")
+    csv_file = Path(str(os.getenv("BASE_PATH")) + "/onchain_data/onchain_first_pull/one_table/filter_data/governance_data_86.csv")    
     
     if not csv_file.exists():
         logger.error(f"CSV file not found at: {csv_file}")
@@ -617,11 +617,9 @@ def main():
         # Create inserter
         inserter = PostgresInserter()
         
-        # Ask user about dropping existing table
-        drop_existing = os.getenv('POSTGRES_DROP_EXISTING', 'false').lower() == 'true'
-        if not drop_existing:
-            response = input("Drop existing table if it exists? (y/N): ").lower()
-            drop_existing = response in ['y', 'yes']
+        logger.info("Dropping existing table")
+        # Automatically drop existing table
+        drop_existing = True  # Always drop existing table
         
         # Run import
         success = inserter.run_full_import(csv_file, drop_existing=drop_existing)

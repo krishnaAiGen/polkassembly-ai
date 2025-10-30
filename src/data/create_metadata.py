@@ -482,11 +482,16 @@ def main():
         print("Please set it in your .env file or environment variables")
         return
     
-    # File configurations: (file_path, domain_name)
-    file_configs = [
-        ("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/joined_data/static/combined.txt", "static_documentation"),
-        ("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/joined_data/dynamic/combined.json", "dynamic_documentation")
-    ]
+    # File configurations: (file_path, domain_name) - from environment
+    from dotenv import load_dotenv
+    load_dotenv()
+    combined_static = os.getenv("COMBINED_STATIC_PATH", "")
+    combined_dynamic = os.getenv("COMBINED_DYNAMIC_PATH", "")
+    file_configs = []
+    if combined_static:
+        file_configs.append((combined_static, "static_documentation"))
+    if combined_dynamic:
+        file_configs.append((combined_dynamic, "dynamic_documentation"))
     
     # Validate file paths
     for file_path, domain_name in file_configs:
@@ -532,14 +537,14 @@ def test_file_type_handling():
     generator = DomainMetadataGenerator(api_key=API_KEY)
     
     # Test JSON file
-    json_file = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/joined_data/dynamic/combined.json"
+    json_file = os.getenv("COMBINED_DYNAMIC_PATH", "")
     if os.path.exists(json_file):
         print("Testing JSON file handling...")
         json_samples = generator.smart_file_sampling(json_file)
         print(f"JSON samples extracted: {sum(len(samples) for samples in json_samples.values())}")
     
     # Test text file  
-    txt_file = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/joined_data/static/combined.txt"
+    txt_file = os.getenv("COMBINED_STATIC_PATH", "")
     if os.path.exists(txt_file):
         print("Testing text file handling...")
         txt_samples = generator.smart_file_sampling(txt_file)

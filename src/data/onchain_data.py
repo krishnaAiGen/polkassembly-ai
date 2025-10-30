@@ -7,6 +7,10 @@ from enum import Enum
 from datetime import datetime
 import logging
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -189,7 +193,7 @@ def fetch_onchain_data(max_items_per_type: int = 1000, data_dir: str = None):
     """Main function to fetch onchain data for all supported networks"""
     # Use the specified directory path
     if not data_dir:
-        data_dir = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/onchain_data"
+        data_dir = str(os.getenv("BASE_PATH")) + "/data/onchain_data"
     
     logger.info(f"Storing onchain data in: {data_dir}")
     
@@ -212,4 +216,5 @@ def fetch_onchain_data(max_items_per_type: int = 1000, data_dir: str = None):
 
 if __name__ == "__main__":
     # Fetch data for all networks and proposal types
+    print(str(os.getenv("BASE_PATH")) + "/data/onchain_data")
     fetch_onchain_data(max_items_per_type=10)  # Adjust as needed
