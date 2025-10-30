@@ -187,9 +187,15 @@ def save_concatenated_data(output_dir: str) -> None:
 
 if __name__ == "__main__":
     # Example usage:
-    # 1. Set the data source paths
-    static_data_source = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/static_sources"
-    dynamic_data_source = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/dynamic_kusama_polka"
-    
-    # 2. Save concatenated data
-    save_concatenated_data("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/joined_data") 
+    # 1. Set the data source paths from environment (do not hardcode paths)
+    from dotenv import load_dotenv
+    load_dotenv()
+    static_data_source = os.getenv("STATIC_DATA_SOURCE", "")
+    dynamic_data_source = os.getenv("DYNAMIC_DATA_SOURCE", "")
+    output_dir = os.getenv("JOINED_OUTPUT_DIR", "")
+
+    if not static_data_source or not dynamic_data_source or not output_dir:
+        logger.error("Please set STATIC_DATA_SOURCE, DYNAMIC_DATA_SOURCE, and JOINED_OUTPUT_DIR in your environment.")
+    else:
+        # 2. Save concatenated data
+        save_concatenated_data(output_dir)

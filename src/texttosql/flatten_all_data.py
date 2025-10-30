@@ -602,7 +602,7 @@ class DataFlattener:
 def main():
     """Main execution function"""
     # Configuration - JSON files are in the data/onchain_data directory
-    data_directory = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/onchain_data")
+    data_directory = Path(str(os.getenv("BASE_PATH")) + "/data/onchain_data")
     openai_api_key = os.getenv('OPENAI_API_KEY')  # Set this in your environment
     
     if not openai_api_key:
@@ -614,8 +614,7 @@ def main():
     print(f"Data directory absolute: {data_directory.resolve()}")
     
     # Set output directory for CSV files
-    output_directory = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull"
-    
+    output_directory = str(os.getenv("BASE_PATH")) + "/onchain_data/onchain_first_pull"
     # Initialize flattener
     flattener = DataFlattener(str(data_directory), output_data_dir=output_directory, openai_api_key=openai_api_key)
     

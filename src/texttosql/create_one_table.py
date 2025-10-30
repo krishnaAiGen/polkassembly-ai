@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 from typing import Dict, List, Set
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -275,9 +278,10 @@ class CSVCombiner:
 def main():
     """Main execution function"""
     # Configuration - use the new CSV location and output location
-    csv_directory = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/all_csv")
-    output_directory = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/onchain_first_pull/one_table")
-    
+    csv_directory = Path(str(os.getenv("BASE_PATH")) + "/onchain_data/onchain_first_pull/all_csv")
+    output_directory = Path(str(os.getenv("BASE_PATH")) + "/onchain_data/onchain_first_pull/one_table")
+
+
     if not csv_directory.exists():
         logger.error(f"CSV directory not found: {csv_directory}")
         return

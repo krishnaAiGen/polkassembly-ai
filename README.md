@@ -264,10 +264,6 @@ Once the server is running, visit:
 
 For detailed setup, troubleshooting, and development information, see [setup.md](setup.md).
 
-## License
-
-This project is licensed under the MIT License.
-
 ## Support
 
 For issues and questions:

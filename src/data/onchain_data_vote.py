@@ -308,7 +308,9 @@ def fetch_votes_data(network: str = "polkadot", data_dir: str = None, max_items:
     """Main function to fetch ALL votes data for a specific network in batches"""
     # Use the specified directory path
     if not data_dir:
-        data_dir = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/voting_data"
+        from dotenv import load_dotenv
+        load_dotenv()
+        data_dir = os.getenv("VOTING_DATA_DIR")
     
     logger.info(f"Storing votes data in: {data_dir}")
     
@@ -336,7 +338,9 @@ def fetch_onchain_data(max_items_per_type: int = 1000, data_dir: str = None):
     """Main function to fetch onchain data for all supported networks"""
     # Use the specified directory path
     if not data_dir:
-        data_dir = "/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/onchain_data"
+        from dotenv import load_dotenv
+        load_dotenv()
+        data_dir = os.getenv("ONCHAIN_DATA_DIR")
     
     logger.info(f"Storing onchain data in: {data_dir}")
     

@@ -23,9 +23,11 @@ logger = logging.getLogger(__name__)
 def main():
     """Main execution function to insert vote data."""
     
-    # --- Configuration ---
-    csv_file = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/data/voting_data/polkadot_votes_20250922_153403.csv")
-    schema_file = Path("/Users/krishnayadav/Documents/test_projects/polkassembly-ai-v2/polkassembly-ai/onchain_data/vote/vote_schema_info.json")
+    # --- Configuration --- (do not hardcode paths)
+    from dotenv import load_dotenv
+    load_dotenv()
+    csv_file = Path(os.getenv("VOTING_CSV_FILE", ""))
+    schema_file = Path(os.getenv("VOTE_SCHEMA_PATH", ""))
     table_name = "voting_data"
     
     if not csv_file.exists():
@@ -44,13 +46,8 @@ def main():
             schema_path=str(schema_file)
         )
         
-        # Ask user about dropping the existing table, or use environment variable
-        drop_existing_env = os.getenv('POSTGRES_DROP_EXISTING', 'false').lower()
-        if drop_existing_env == 'true':
-            drop_existing = True
-        else:
-            response = input(f"Drop existing table '{table_name}' if it exists? (y/N): ").lower()
-            drop_existing = response in ['y', 'yes']
+        # Drop behavior controlled by environment variable only (non-interactive)
+        drop_existing = os.getenv('POSTGRES_DROP_EXISTING', 'false').lower() == 'true'
         
         # Run the full import process
         success = inserter.run_full_import(csv_file, drop_existing=drop_existing)
