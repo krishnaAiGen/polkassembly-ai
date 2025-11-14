@@ -1,59 +1,62 @@
 # Polkassembly AI - Complete Requirements
 # Core AI and ML dependencies
-openai==1.3.0
-tiktoken==0.5.2
+openai==1.98.0
+tiktoken==0.7.0
 numpy==1.24.3
-pandas==2.2.2
+pandas==2.1.1
 psycopg2-binary==2.9.9
 
 # Vector Database
 chromadb==0.4.18
 
 # Web Framework and API
-fastapi==0.104.1
-uvicorn==0.24.0
-python-multipart==0.0.6
+fastapi==0.115.0
+uvicorn==0.32.1
+python-multipart==0.0.12
 
 # Data Validation
-pydantic==2.5.0
+pydantic==2.11.7
 
 # Text Processing and Chunking
-langchain==0.0.335
-langchain-text-splitters==0.0.1
+langchain==0.2.17
+langchain-text-splitters==0.2.4
 
 # HTTP Requests and Web Search
-requests==2.31.0
-aiohttp==3.9.1
-httpx==0.27.2
+requests==2.32.4
+aiohttp==3.12.15
+httpx==0.28.1
 
 # Environment and Configuration
 python-dotenv==1.0.0
 
 # Scheduling (for onchain data hook)
-schedule==1.2.0
+schedule==1.2.1
 
 # Memory Management (optional)
 mem0ai==0.0.11
 
 # Rate Limiting and Caching
-redis==5.0.1
+redis==5.0.7
 
 # Logging and Utilities
 pathlib2==2.3.7
 
-# CORS Middleware
-starlette==0.27.0
+# CORS Middleware (managed by fastapi)
+# starlette is a dependency of fastapi, no need to specify explicitly
 
 # Development and Testing (optional)
 pytest==7.4.3
 pytest-asyncio==0.21.1
 
 # Additional utilities that might be needed
-urllib3==2.1.0
+urllib3==1.26.20
 certifi==2023.11.17
 charset-normalizer==3.3.2
 idna==3.6
 algoliasearch==4.24.0
 
 # Google Gemini SDK
-google-genai==0.3.0
+google-genai==1.28.0
+
+# AWS SDK (for guardrail)
+boto3==1.35.0
