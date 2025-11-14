@@ -7,6 +7,7 @@ Provides endpoints for querying the knowledge base and getting AI-generated answ
 import os
 import sys
 import logging
+import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -268,11 +269,23 @@ async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(aut
             logger.error(f"Guardrail error for user {request.user_id}: {guardrail_result['reason']}")
             # Continue processing if guardrail fails - don't block legitimate queries due to technical issues
         
+    
+        conversation_history_dicts = None
+        if request.conversation_history:
+            conversation_history_dicts = [
+                {
+                    'query': msg.query,
+                    'response': msg.response,
+                    'timestamp': msg.timestamp
+                }
+                for msg in request.conversation_history
+            ]
+        
         # Use new query processing pipeline
         try:
             qa_result = await processUserQuery(
                 userMessage=request.question,
-                conversationHistory=request.conversation_history,
+                conversationHistory=conversation_history_dicts,
                 static_embedding_manager=static_embedding_manager,
                 dynamic_embedding_manager=dynamic_embedding_manager,
                 qa_generator=qa_generator,
@@ -337,10 +350,16 @@ async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(aut
         processing_time = qa_result.get('processing_time_ms', (datetime.now() - start_time).total_seconds() * 1000)
         
         logger.info(f"Query processed in {processing_time:.2f}ms for user {request.user_id} (remaining: {remaining_requests}, route: {qa_result.get('route', 'unknown')})")
-        print(qa_result['answer'])
+        
+
+        answer = qa_result['answer']
+        if answer:
+            answer = re.sub(r'<!--CLARIFICATION_MARKER:[^>]+-->', '', answer).strip()
+        
+        print(answer)
 
         return QueryResponse(
-            answer=qa_result['answer'],
+            answer=answer,
             sources=sources,
             follow_up_questions=qa_result.get('follow_up_questions', []),
             remaining_requests=remaining_requests,

@@ -5,10 +5,119 @@ Implements the new routing-first architecture with structured logging.
 
 import logging
 import json
-from typing import Dict, Any, Optional, List, Tuple
+import re
+import base64
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 
+from .confidence import compute_retrieval_confidence
+from .greeting_handler import handle_generic_query_llm
+from .clarification import generate_clarification_question
+from .internet_fallback import generate_internet_search_response
+
 logger = logging.getLogger(__name__)
+
+
+async def combine_query_with_clarification(
+    original_query: str,
+    clarification_response: str,
+    qa_generator,
+    log_step
+) -> str:
+    """
+    Intelligently combine the original query with the user's clarification response
+    using an LLM to create a better, more coherent combined query.
+    
+    Args:
+        original_query: The original ambiguous query
+        clarification_response: The user's response to the clarification question
+        qa_generator: QA generator instance
+        log_step: Logging function
+    
+    Returns:
+        A combined query that intelligently merges the original query and clarification
+    """
+    log_step("query_combination_start", {
+        "original_query": original_query[:100],
+        "clarification_response": clarification_response[:100]
+    })
+    
+    combination_prompt = f"""
+You are helping to combine a user's original query with their clarification response.
+
+Original query: "{original_query}"
+
+User's clarification response: "{clarification_response}"
+
+Your task:
+- Create a single, clear, and coherent query that combines both the original intent and the clarification
+- Make it natural and well-formed
+- Preserve the original intent while incorporating the clarification details
+- Do NOT add any explanations or meta-commentary - just output the combined query
+
+Example:
+Original: "show me proposals"
+Clarification: "on Polkadot network"
+Combined: "show me proposals on Polkadot network"
+
+Another example:
+Original: "what is governance"
+Clarification: "I want to see recent proposals"
+Combined: "what is governance and show me recent proposals"
+
+Now create the combined query:
+"""
+    
+    try:
+        if qa_generator.gemini_client:
+            model_name = getattr(qa_generator.gemini_client, 'model_name', 'Gemini')
+            log_step("query_combination_llm_call", {"model": model_name})
+            
+            response = qa_generator.gemini_client.get_response(combination_prompt)
+            combined_query = response.strip()
+            
+            # Remove any quotes if the LLM wrapped the response
+            if combined_query.startswith('"') and combined_query.endswith('"'):
+                combined_query = combined_query[1:-1]
+            elif combined_query.startswith("'") and combined_query.endswith("'"):
+                combined_query = combined_query[1:-1]
+            
+            log_step("query_combination_complete", {
+                "combined_query": combined_query[:100]
+            })
+            
+            return combined_query
+        else:
+            if hasattr(qa_generator, 'client'):
+                system_prompt = """You are a query combination assistant. You combine user queries with clarification responses to create coherent, natural queries."""
+                
+                response = qa_generator.client.chat.completions.create(
+                    model=qa_generator.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": combination_prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=200
+                )
+                combined_query = response.choices[0].message.content.strip()
+                
+                # Remove any quotes if the LLM wrapped the response
+                if combined_query.startswith('"') and combined_query.endswith('"'):
+                    combined_query = combined_query[1:-1]
+                elif combined_query.startswith("'") and combined_query.endswith("'"):
+                    combined_query = combined_query[1:-1]
+                
+                return combined_query
+        
+        # Fallback to simple concatenation if LLM is not available
+        log_step("query_combination_fallback", {"note": "Using simple concatenation fallback"})
+        return f"{original_query} {clarification_response}".strip()
+        
+    except Exception as e:
+        log_step("query_combination_error", {"error": str(e)}, "error")
+        # Fallback to simple concatenation on error
+        return f"{original_query} {clarification_response}".strip()
 
 def log_step(step_name: str, data: Dict[str, Any], level: str = "info"):
     """Log a pipeline step with structured data"""
@@ -25,6 +134,203 @@ def log_step(step_name: str, data: Dict[str, Any], level: str = "info"):
         logger.error(f"[{step_name}] {json.dumps(log_data, default=str)}")
     elif level == "debug":
         logger.debug(f"[{step_name}] {json.dumps(log_data, default=str)}")
+
+
+async def detect_and_handle_clarification_response(
+    userMessage: str,
+    conversationHistory: Optional[List[Dict[str, Any]]],
+    qa_generator,
+    log_step
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect if the current user message is a response to a clarification question.
+    Uses embedded marker in the clarification response for reliable detection.
+    
+    Args:
+        userMessage: The current user message
+        conversationHistory: Previous conversation messages
+        qa_generator: QA generator instance (not used but kept for compatibility)
+        log_step: Logging function
+        
+    Returns:
+        None if not a clarification response, or dict with:
+        - combined_query: Original query + clarification response
+        - original_query: The original query that needed clarification
+        - original_route: The original route that was used
+        - clarification_response: The user's clarification response
+    """
+    if not conversationHistory or len(conversationHistory) < 1:
+        return None
+    
+    # Get the last conversation entry
+    last_entry = conversationHistory[-1]
+    # Handle both Pydantic models and dicts
+    if hasattr(last_entry, 'response'):
+        last_response = last_entry.response.strip()
+    elif isinstance(last_entry, dict):
+        last_response = last_entry.get('response', '').strip()
+    else:
+        return None
+    
+    if not last_response:
+        return None
+    
+    # Look for the embedded clarification marker
+    # Try new format first: <!--CLARIFICATION_MARKER:base64_encoded_query|route|router_confidence-->
+    marker_pattern_new = r'<!--CLARIFICATION_MARKER:([A-Za-z0-9+/=]+)\|([a-z]+)\|([0-9.]+)-->'
+    marker_match = re.search(marker_pattern_new, last_response)
+    
+    if marker_match:
+        try:
+            # Decode the original query, route, and router confidence from the marker
+            encoded_query = marker_match.group(1)
+            original_route = marker_match.group(2)
+            original_router_confidence = float(marker_match.group(3))
+            original_query = base64.b64decode(encoded_query.encode('utf-8')).decode('utf-8')
+            
+            log_step("clarification_detected_marker", {
+                "method": "embedded_marker_new_format",
+                "original_query": original_query[:100],
+                "original_route": original_route,
+                "original_router_confidence": original_router_confidence,
+                "clarification_response": userMessage[:100]
+            })
+            
+            # Use LLM to intelligently combine original query with clarification response
+            combined_query = await combine_query_with_clarification(
+                original_query,
+                userMessage,
+                qa_generator,
+                log_step
+            )
+            
+            return {
+                'combined_query': combined_query,
+                'original_query': original_query,
+                'original_route': original_route,
+                'original_router_confidence': original_router_confidence,
+                'clarification_response': userMessage
+            }
+        except Exception as e:
+            log_step("clarification_marker_decode_error", {
+                "error": str(e),
+                "note": "Failed to decode new format marker, trying intermediate format"
+            }, "warning")
+            marker_match = None
+    
+    # Fallback to intermediate format (backward compatibility): <!--CLARIFICATION_MARKER:base64_encoded_query|route-->
+    if not marker_match:
+        marker_pattern_intermediate = r'<!--CLARIFICATION_MARKER:([A-Za-z0-9+/=]+)\|([a-z]+)-->'
+        marker_match = re.search(marker_pattern_intermediate, last_response)
+        
+        if marker_match:
+            try:
+                # Decode the original query and route from the marker (intermediate format doesn't have router_confidence)
+                encoded_query = marker_match.group(1)
+                original_route = marker_match.group(2)
+                original_query = base64.b64decode(encoded_query.encode('utf-8')).decode('utf-8')
+                
+                log_step("clarification_detected_marker", {
+                    "method": "embedded_marker_intermediate_format",
+                    "original_query": original_query[:100],
+                    "original_route": original_route,
+                    "note": "Intermediate format marker - re-routing to get router confidence",
+                    "clarification_response": userMessage[:100]
+                })
+                
+                # Re-route the original query to get router confidence
+                route_result = await route_query_llm(
+                    original_query,
+                    conversationHistory[:-1] if conversationHistory else None,  # Exclude the clarification response
+                    qa_generator
+                )
+                original_router_confidence = route_result.get("confidence", 0.7)
+                
+                log_step("clarification_intermediate_format_confidence_determined", {
+                    "original_query": original_query[:100],
+                    "determined_route": original_route,
+                    "determined_router_confidence": original_router_confidence
+                })
+                
+                # Use LLM to intelligently combine original query with clarification response
+                combined_query = await combine_query_with_clarification(
+                    original_query,
+                    userMessage,
+                    qa_generator,
+                    log_step
+                )
+                
+                return {
+                    'combined_query': combined_query,
+                    'original_query': original_query,
+                    'original_route': original_route,
+                    'original_router_confidence': original_router_confidence,
+                    'clarification_response': userMessage
+                }
+            except Exception as e:
+                log_step("clarification_marker_decode_error", {
+                    "error": str(e),
+                    "note": "Failed to decode intermediate format marker, trying old format"
+                }, "warning")
+                marker_match = None
+    
+    # Fallback to old format (backward compatibility): <!--CLARIFICATION_MARKER:base64_encoded_query-->
+    if not marker_match:
+        marker_pattern_old = r'<!--CLARIFICATION_MARKER:([A-Za-z0-9+/=]+)-->'
+        marker_match = re.search(marker_pattern_old, last_response)
+        
+        if marker_match:
+            try:
+                # Decode the original query from the marker (old format doesn't have route or router_confidence)
+                encoded_query = marker_match.group(1)
+                original_query = base64.b64decode(encoded_query.encode('utf-8')).decode('utf-8')
+                
+                log_step("clarification_detected_marker", {
+                    "method": "embedded_marker_old_format",
+                    "original_query": original_query[:100],
+                    "note": "Old format marker - re-routing original query to determine route and confidence",
+                    "clarification_response": userMessage[:100]
+                })
+                
+                # Re-route the original query to determine what route it should have been
+                route_result = await route_query_llm(
+                    original_query,
+                    conversationHistory[:-1] if conversationHistory else None,  # Exclude the clarification response
+                    qa_generator
+                )
+                original_route = route_result.get("route", "static")
+                original_router_confidence = route_result.get("confidence", 0.7)
+                
+                log_step("clarification_old_format_route_determined", {
+                    "original_query": original_query[:100],
+                    "determined_route": original_route,
+                    "determined_router_confidence": original_router_confidence
+                })
+                
+                # Use LLM to intelligently combine original query with clarification response
+                combined_query = await combine_query_with_clarification(
+                    original_query,
+                    userMessage,
+                    qa_generator,
+                    log_step
+                )
+                
+                return {
+                    'combined_query': combined_query,
+                    'original_query': original_query,
+                    'original_route': original_route,
+                    'original_router_confidence': original_router_confidence,
+                    'clarification_response': userMessage
+                }
+            except Exception as e:
+                log_step("clarification_marker_decode_error", {
+                    "error": str(e),
+                    "note": "Failed to decode old format marker, treating as normal query"
+                }, "warning")
+                return None
+    
+    # No marker found - not a clarification response
+    return None
 
 
 async def route_query_llm(
@@ -188,325 +494,6 @@ Now respond with ONLY the JSON for this query:
         }
 
 
-async def handle_dynamic_query_sql(
-    query: str,
-    conversation_history: Optional[List[Dict[str, Any]]],
-    qa_generator
-) -> Dict[str, Any]:
-    """
-    Handle dynamic queries (on-chain data) using SQL generation.
-    
-    Returns:
-        Dictionary with answer, sources, and metadata for SQL-based responses
-    """
-    log_step("dynamic_handler_start", {"query_preview": query[:100]})
-    
-    try:
-        table = qa_generator._determine_table_from_query(query)
-        log_step("dynamic_table_determined", {"table": table})
-        
-        from ..texttosql.query_api import ask_question
-        
-        sql_result = ask_question(query, conversation_history, table)
-        
-        log_step("dynamic_sql_complete", {
-            "success": sql_result.get('success', False),
-            "result_count": sql_result.get('result_count', 0)
-        })
-        
-        return {
-            'answer': sql_result.get('natural_response', 'No response available'),
-            'sources': [],
-            'chunks_used': 0,
-            'search_method': 'sql_query',
-            'sql_query': sql_result.get('sql_queries', []),
-            'result_count': sql_result.get('result_count', 0),
-            'success': sql_result.get('success', False),
-            'confidence': 0.9 if sql_result.get('success', False) else 0.5
-        }
-        
-    except Exception as e:
-        log_step("dynamic_handler_error", {"error": str(e)}, "error")
-        return {
-            'answer': "I'm sorry, I encountered an error processing your database query. Please try rephrasing your question or try again later.",
-            'sources': [],
-            'chunks_used': 0,
-            'search_method': 'sql_error_fallback',
-            'sql_query': [],
-            'result_count': 0,
-            'success': False,
-            'confidence': 0.0,
-            'follow_up_questions': [
-                "How does Polkadot's governance system work?",
-                "What are the benefits of staking DOT tokens?",
-                "How do parachains connect to Polkadot?"
-            ]
-        }
-
-
-def _is_greeting_query(query: str) -> bool:
-    greeting_keywords = [
-        'hi', 'hello', 'hey', 'greetings', 'good morning', 'good afternoon', 
-        'good evening', 'what\'s up', 'whats up', 'wassup', 'howdy',
-        'intro', 'introduction', 'who are you', 'what are you',
-        'what do you do', 'what is this', 'help', 'start'
-    ]
-    
-    query_lower = query.lower().strip()
-    
-    for keyword in greeting_keywords:
-        if query_lower == keyword:
-            return True
-    
-    if len(query_lower.split()) <= 3:
-        for keyword in greeting_keywords:
-            if keyword in query_lower:
-                data_indicators = ['number', 'count', 'total', 'sum', 'average', 'highest', 'lowest', 
-                                   'vote', 'votes', 'voter', 'proposal', 'referendum', 'treasury',
-                                   'month', 'year', 'date', 'time', 'day', 'week']
-                has_data_indicator = any(indicator in query_lower for indicator in data_indicators)
-                if not has_data_indicator:
-                    return True
-    
-    return False
-
-
-def _get_polkassembly_introduction() -> Dict[str, Any]:
-    introduction = """Hello! I'm **Klara** 👋 – your AI-powered governance assistant for **Polkadot** and **Kusama**!
-
-I'm here to help you explore the governance ecosystem through **Polkassembly**, making it easy to query on-chain data, analyze proposals, and understand the voting process—all in natural language.
-
-**What I can help you with:**
-
-🗳 **Governance Data** - Query proposals, referenda, bounties, and treasury activities
-
-📊 **Voting Analysis** - Track voter behavior, delegation, and voting power
-
-💰 **Treasury Insights** - Explore funding proposals and beneficiary data
-
-🧭 **Platform Guidance** - Learn how to use Polkassembly features and OpenGov
-
-**Who I'm built for:**
-
-- Community members exploring proposals
-- Delegates analyzing voting patterns  
-- Builders tracking treasury activities
-- Researchers studying governance trends
-
-**Try asking me things like:**
-
-- "Show all active referenda on Polkadot"
-- "Who voted on referendum 472?"
-- "List treasury proposals above 100k DOT"
-- "How does conviction voting work?"
-
-**Useful Links:**
-
-- **Klara Guide**: [klara.polkassembly.io/guide](https://klara.polkassembly.io/guide) - If you want detailed guidance on how to use Klara, follow this doc
-- **Polkadot Governance**: [polkadot.polkassembly.io](https://polkadot.polkassembly.io)
-- **Kusama Governance**: [kusama.polkassembly.io](https://kusama.polkassembly.io)
-- **Documentation**: [docs.polkassembly.io](https://docs.polkassembly.io)"""
-
-    sources = [
-        {
-            'title': 'Polkassembly Main Platform',
-            'url': 'https://polkassembly.io',
-            'source_type': 'platform',
-            'similarity_score': 1.0
-        },
-        {
-            'title': 'Polkadot Governance on Polkassembly',
-            'url': 'https://polkadot.polkassembly.io',
-            'source_type': 'platform',
-            'similarity_score': 1.0
-        },
-        {
-            'title': 'Kusama Governance on Polkassembly',
-            'url': 'https://kusama.polkassembly.io',
-            'source_type': 'platform',
-            'similarity_score': 1.0
-        },
-        {
-            'title': 'Polkassembly Documentation',
-            'url': 'https://docs.polkassembly.io',
-            'source_type': 'documentation',
-            'similarity_score': 1.0
-        }
-    ]
-
-    greeting_follow_ups = [
-        "How does Polkadot governance work?",
-        "What are parachains and how do they work?",
-        "How can I start staking DOT tokens?"
-    ]
-    
-    return {
-        'answer': introduction,
-        'sources': sources,
-        'confidence': 1.0,
-        'follow_up_questions': greeting_follow_ups,
-        'context_used': True,
-        'model_used': 'polkassembly_intro',
-        'chunks_used': 0,
-        'search_method': 'greeting_response'
-    }
-
-
-async def handle_generic_query_llm(
-    query: str,
-    conversation_history: Optional[List[Dict[str, Any]]],
-    qa_generator
-) -> Dict[str, Any]:
-    """
-    Handle generic queries (greetings, non-Polkadot queries).
-    For greetings, returns the exact same hardcoded response as before.
-    For other generic queries, uses LLM.
-    
-    Returns:
-        Dictionary with answer, sources, and metadata for generic responses
-    """
-    log_step("generic_handler_start", {"query_preview": query[:100]})
-    
-    is_greeting = _is_greeting_query(query)
-    log_step("generic_handler_greeting_check", {"is_greeting": is_greeting})
-    
-    if is_greeting:
-        log_step("generic_handler_greeting_detected", {})
-        return _get_polkassembly_introduction()
-    
-    log_step("generic_handler_non_greeting", {"note": "Using LLM for non-greeting generic query"})
-    try:
-        generic_prompt = f"""
-You are Klara, an AI-powered governance assistant for Polkadot and Kusama on Polkassembly.
-
-The user has sent this query: "{query}"
-
-This query has been identified as a generic query, which could be:
-- A question outside the Polkadot/blockchain domain
-- A request for general help or introduction
-- An ambiguous query
-
-Your task:
-1. If it's a non-Polkadot question, politely redirect to Polkadot-related topics
-2. If it's a request for help, provide helpful guidance about what you can do
-3. Keep responses concise, friendly, and professional
-
-Important guidelines:
-- For non-Polkadot topics: Politely explain that you specialize in Polkadot/Kusama governance
-- Always maintain a helpful and friendly tone
-- If appropriate, suggest relevant Polkadot-related questions they could ask
-
-Respond with a natural, conversational answer that addresses the user's query appropriately.
-"""
-        
-        if qa_generator.gemini_client:
-            model_name = getattr(qa_generator.gemini_client, 'model_name', 'Gemini')
-            log_step("generic_handler_llm_call", {"model": model_name})
-            
-            response = qa_generator.gemini_client.get_response(generic_prompt)
-            
-            log_step("generic_handler_complete", {
-                "response_length": len(response)
-            })
-            
-            follow_up_questions = [
-                "How does Polkadot's governance system work?",
-                "What are the benefits of staking DOT tokens?",
-                "How do parachains connect to Polkadot?"
-            ]
-            
-            sources = [
-                {
-                    'title': 'Polkassembly Main Platform',
-                    'url': 'https://polkassembly.io',
-                    'source_type': 'platform',
-                    'similarity_score': 1.0
-                },
-                {
-                    'title': 'Polkadot Governance on Polkassembly',
-                    'url': 'https://polkadot.polkassembly.io',
-                    'source_type': 'platform',
-                    'similarity_score': 1.0
-                }
-            ]
-            
-            return {
-                'answer': response.strip(),
-                'sources': sources,
-                'confidence': 0.8,
-                'follow_up_questions': follow_up_questions,
-                'context_used': False,
-                'model_used': model_name,
-                'chunks_used': 0,
-                'search_method': 'generic_llm_response'
-            }
-        else:
-            log_step("generic_handler_fallback", {"reason": "no_gemini_client"}, "warning")
-            
-            if hasattr(qa_generator, 'client'):
-                try:
-                    system_prompt = """You are Klara, an AI-powered governance assistant for Polkadot and Kusama on Polkassembly. 
-You help users with Polkadot governance questions, but you can also handle greetings and general queries in a friendly, helpful manner."""
-                    
-                    response = qa_generator.client.chat.completions.create(
-                        model=qa_generator.model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": generic_prompt}
-                        ],
-                        temperature=0.7,
-                        max_tokens=300
-                    )
-                    answer = response.choices[0].message.content
-                    
-                    return {
-                        'answer': answer.strip(),
-                        'sources': [],
-                        'confidence': 0.7,
-                        'follow_up_questions': [
-                            "How does Polkadot's governance system work?",
-                            "What are the benefits of staking DOT tokens?",
-                            "How do parachains connect to Polkadot?"
-                        ],
-                        'context_used': False,
-                        'model_used': qa_generator.model,
-                        'chunks_used': 0,
-                        'search_method': 'generic_llm_fallback'
-                    }
-                except Exception as e:
-                    log_step("generic_handler_error", {"error": str(e)}, "error")
-            
-            return {
-                'answer': "Hello! I'm Klara, your AI assistant for Polkadot and Kusama governance. I can help you with questions about proposals, voting, treasury, and more. What would you like to know?",
-                'sources': [],
-                'confidence': 0.5,
-                'follow_up_questions': [
-                    "How does Polkadot's governance system work?",
-                    "What are the benefits of staking DOT tokens?",
-                    "How do parachains connect to Polkadot?"
-                ],
-                'context_used': False,
-                'model_used': 'fallback',
-                'chunks_used': 0,
-                'search_method': 'generic_fallback'
-            }
-            
-    except Exception as e:
-        log_step("generic_handler_error", {"error": str(e)}, "error")
-        return {
-            'answer': "Hello! I'm Klara, your AI assistant for Polkadot and Kusama governance. How can I help you today?",
-            'sources': [],
-            'confidence': 0.5,
-            'follow_up_questions': [
-                "How does Polkadot's governance system work?",
-                "What are the benefits of staking DOT tokens?",
-                "How do parachains connect to Polkadot?"
-            ],
-            'context_used': False,
-            'model_used': 'error_fallback',
-            'chunks_used': 0,
-            'search_method': 'generic_error'
-        }
 
 
 async def processUserQuery(
@@ -544,34 +531,102 @@ async def processUserQuery(
     })
     
     try:
-        log_step("routing_start", {})
-        route_result = await route_query_llm(
+        # Check if this is a clarification response
+        clarification_info = await detect_and_handle_clarification_response(
             userMessage,
             conversationHistory,
-            qa_generator
+            qa_generator,
+            log_step
         )
-        route = route_result["route"]
-        confidence = route_result["confidence"]
+        
+        is_clarification_followup = clarification_info is not None
+        original_query_for_route = userMessage
+        combined_query = userMessage
+        stored_route = None
+        stored_router_confidence = None
+        
+        if is_clarification_followup:
+            log_step("clarification_followup_detected", {
+                "original_query": clarification_info['original_query'],
+                "original_route": clarification_info.get('original_route', 'unknown'),
+                "original_router_confidence": clarification_info.get('original_router_confidence', 'unknown'),
+                "clarification_response": clarification_info['clarification_response'],
+                "combined_query_preview": clarification_info['combined_query'][:100]
+            })
+            # Use the stored original route and router confidence (don't re-route)
+            stored_route = clarification_info.get('original_route')
+            stored_router_confidence = clarification_info.get('original_router_confidence', 0.7)
+            original_query_for_route = clarification_info['original_query']
+            combined_query = clarification_info['combined_query']
+        
+        # Use stored route if available (from clarification followup), otherwise route normally
+        if stored_route and stored_route in ['static', 'dynamic', 'hybrid', 'generic']:
+            log_step("routing_using_stored_route", {
+                "is_clarification_followup": is_clarification_followup,
+                "stored_route": stored_route,
+                "stored_router_confidence": stored_router_confidence
+            })
+            route = stored_route
+            # Re-route the combined query to get fresh router confidence for the clarified query
+            # This gives a more accurate confidence assessment since the query is now clearer
+            log_step("routing_combined_query_for_confidence", {
+                "combined_query_preview": combined_query[:100],
+                "enforced_route": stored_route
+            })
+            route_result = await route_query_llm(
+                combined_query,
+                conversationHistory,
+                qa_generator
+            )
+            # Use the fresh router confidence from the clarified query, but enforce the stored route
+            fresh_confidence = route_result.get("confidence", 0.7)
+            suggested_route = route_result.get("route", stored_route)
+            
+            if suggested_route != stored_route:
+                log_step("routing_route_mismatch", {
+                    "stored_route": stored_route,
+                    "suggested_route": suggested_route,
+                    "note": "Using stored route but fresh confidence from clarified query"
+                }, "warning")
+            
+            confidence = fresh_confidence
+        else:
+            log_step("routing_start", {
+                "is_clarification_followup": is_clarification_followup,
+                "query_for_routing": original_query_for_route[:100]
+            })
+            route_result = await route_query_llm(
+                original_query_for_route,
+                conversationHistory,
+                qa_generator
+            )
+            route = route_result["route"]
+            confidence = route_result["confidence"]
         log_step("routing_complete", {
             "route": route,
-            "confidence": confidence
+            "confidence": confidence,
+            "is_clarification_followup": is_clarification_followup
         })
         
-        analyzed_query = userMessage
+        # Use combined query if this is a clarification followup, otherwise use original
+        analyzed_query = combined_query if is_clarification_followup else userMessage
         if conversationHistory and qa_generator:
             log_step("query_analysis_start", {})
             try:
+                # Use analyzed_query (which may be combined) for memory analysis
                 analyzed_query = qa_generator.analyze_query_with_memory(
-                    userMessage,
+                    analyzed_query,
                     conversationHistory
                 )
                 log_step("query_analysis_complete", {
                     "original": userMessage[:100],
-                    "analyzed": analyzed_query[:100]
+                    "analyzed": analyzed_query[:100],
+                    "is_clarification_followup": is_clarification_followup
                 })
             except Exception as e:
                 log_step("query_analysis_error", {"error": str(e)}, "error")
-                analyzed_query = userMessage
+                # Keep the analyzed_query (combined or original) on error
+                pass
         
         processing_time = (datetime.now() - pipeline_start).total_seconds() * 1000
         
@@ -586,20 +641,155 @@ async def processUserQuery(
             static_chunks = rerank_static_chunks(static_chunks)
             log_step("static_retrieval_complete", {"chunks_count": len(static_chunks)})
             
-            qa_result = await qa_generator.generate_answer(
-                query=analyzed_query,
-                chunks=static_chunks,
-                custom_prompt=custom_prompt,
-                user_id=user_id,
-                conversation_history=conversationHistory,
+            retrieval_confidence, semantic_completeness = await compute_retrieval_confidence(
                 route=route,
-                route_confidence=confidence
+                router_confidence=confidence,
+                static_chunks=static_chunks,
+                query=analyzed_query,
+                qa_generator=qa_generator
             )
             
-            log_step("static_route_complete", {
-                "chunks_used": qa_result.get('chunks_used', 0),
-                "search_method": qa_result.get('search_method', 'unknown')
-            })
+            # Use semantic_completeness from compute_retrieval_confidence (or default to 0.5)
+            if semantic_completeness is None:
+                semantic_completeness = 0.5
+            
+            static_similarity = 0.0
+            if static_chunks and len(static_chunks) > 0:
+                similarity_scores = [chunk.get('similarity_score', 0.0) for chunk in static_chunks]
+                avg_similarity = sum(similarity_scores) / len(similarity_scores) if similarity_scores else 0.0
+                max_similarity = max(similarity_scores) if similarity_scores else 0.0
+                static_similarity = (avg_similarity * 0.5 + max_similarity * 0.5)
+            
+            chunk_count_factor = min(len(static_chunks) / 5.0, 1.0) if static_chunks else 0.0
+            final_static_confidence = retrieval_confidence
+            
+            # Decision logic for static route
+            decision = None
+            if final_static_confidence >= 0.65:
+                decision = "ANSWER"
+                qa_result = await qa_generator.generate_answer(
+                    query=analyzed_query,
+                    chunks=static_chunks,
+                    custom_prompt=custom_prompt,
+                    user_id=user_id,
+                    conversation_history=conversationHistory,
+                    route=route,
+                    route_confidence=confidence
+                )
+                
+                log_step("static_confidence_decision", {
+                    "route": "static",
+                    "routerConfidence": confidence,
+                    "semanticCompleteness": semantic_completeness,
+                    "staticSimilarity": static_similarity,
+                    "chunkCountFactor": chunk_count_factor,
+                    "finalStaticConfidence": final_static_confidence,
+                    "decision": decision
+                })
+                
+                log_step("static_route_complete", {
+                    "chunks_used": qa_result.get('chunks_used', 0),
+                    "search_method": qa_result.get('search_method', 'unknown'),
+                    "retrieval_confidence": retrieval_confidence
+                })
+            elif 0.35 <= final_static_confidence < 0.65:
+                decision = "AMBIGUITY_FLOW"
+                if not is_clarification_followup:
+                    log_step("static_confidence_decision", {
+                        "route": "static",
+                        "routerConfidence": confidence,
+                        "semanticCompleteness": semantic_completeness,
+                        "staticSimilarity": static_similarity,
+                        "chunkCountFactor": chunk_count_factor,
+                        "finalStaticConfidence": final_static_confidence,
+                        "decision": decision
+                    })
+                    
+                    clarification_result = await generate_clarification_question(
+                        query=userMessage,
+                        route=route,
+                        router_confidence=confidence,
+                        qa_generator=qa_generator,
+                        log_step=log_step
+                    )
+                    
+                    clarification_result['route'] = route
+                    clarification_result['route_confidence'] = confidence
+                    clarification_result['retrievalConfidence'] = retrieval_confidence
+                    clarification_result['processing_time_ms'] = (datetime.now() - pipeline_start).total_seconds() * 1000
+                    clarification_result['original_query'] = userMessage
+                    
+                    log_step("pipeline_complete", {
+                        "route": route,
+                        "confidence": confidence,
+                        "retrieval_confidence": retrieval_confidence,
+                        "processing_time_ms": clarification_result['processing_time_ms'],
+                        "requires_clarification": True,
+                        "success": True
+                    })
+                    
+                    return clarification_result
+                else:
+                    # Already a clarification followup - proceed with answer
+                    qa_result = await qa_generator.generate_answer(
+                        query=analyzed_query,
+                        chunks=static_chunks,
+                        custom_prompt=custom_prompt,
+                        user_id=user_id,
+                        conversation_history=conversationHistory,
+                        route=route,
+                        route_confidence=confidence
+                    )
+                    
+                    log_step("static_confidence_decision", {
+                        "route": "static",
+                        "routerConfidence": confidence,
+                        "semanticCompleteness": semantic_completeness,
+                        "staticSimilarity": static_similarity,
+                        "chunkCountFactor": chunk_count_factor,
+                        "finalStaticConfidence": final_static_confidence,
+                        "decision": decision,
+                        "note": "Proceeding despite medium confidence as this is already a clarification followup"
+                    })
+                    
+                    log_step("static_route_complete", {
+                        "chunks_used": qa_result.get('chunks_used', 0),
+                        "search_method": qa_result.get('search_method', 'unknown'),
+                        "retrieval_confidence": retrieval_confidence
+                    })
+            else:
+                decision = "FALLBACK_FLOW"
+                log_step("static_confidence_decision", {
+                    "route": "static",
+                    "routerConfidence": confidence,
+                    "semanticCompleteness": semantic_completeness,
+                    "staticSimilarity": static_similarity,
+                    "chunkCountFactor": chunk_count_factor,
+                    "finalStaticConfidence": final_static_confidence,
+                    "decision": decision
+                })
+                
+                internet_result = await generate_internet_search_response(
+                    query=userMessage,
+                    qa_generator=qa_generator,
+                    log_step=log_step
+                )
+                
+                internet_result['route'] = route
+                internet_result['route_confidence'] = confidence
+                internet_result['retrievalConfidence'] = retrieval_confidence
+                internet_result['processing_time_ms'] = (datetime.now() - pipeline_start).total_seconds() * 1000
+                
+                log_step("pipeline_complete", {
+                    "route": route,
+                    "confidence": confidence,
+                    "retrieval_confidence": retrieval_confidence,
+                    "processing_time_ms": internet_result['processing_time_ms'],
+                    "internet_fallback": True,
+                    "success": True
+                })
+                
+                return internet_result
             
         elif route == "dynamic":
             log_step("dynamic_route_start", {})
@@ -614,10 +804,61 @@ async def processUserQuery(
                 route_confidence=confidence
             )
             
+            # Check if query is ambiguous (missing network specification)
+            # Ambiguous if: user didn't specify network AND (SQL filtered by network OR SQL returned both networks)
+            user_query_lower = userMessage.lower()
+            has_network_in_user_query = any(network in user_query_lower for network in ['polkadot', 'kusama', 'dot', 'ksm'])
+            
+            # Check if SQL query contains network filter
+            sql_queries = qa_result.get('sql_query', [])
+            sql_has_network_filter = False
+            if sql_queries:
+                sql_query_str = ' '.join(sql_queries).lower()
+                sql_has_network_filter = 'source_network' in sql_query_str and ('polkadot' in sql_query_str or 'kusama' in sql_query_str)
+            
+            # Check if results contain multiple networks (indicating no network filter was applied)
+            # This is a proxy check - if SQL didn't filter by network, results likely contain both
+            results_have_multiple_networks = False
+            if qa_result.get('success', False) and qa_result.get('result_count', 0) > 0:
+                # If SQL doesn't have network filter, assume it returned both networks
+                results_have_multiple_networks = not sql_has_network_filter
+            
+            # Query is ambiguous if:
+            # 1. User didn't specify network, AND
+            # 2. (SQL filtered by a network user didn't specify OR SQL returned both networks), AND
+            # 3. SQL got results
+            is_ambiguous_query = (
+                not has_network_in_user_query and 
+                (sql_has_network_filter or results_have_multiple_networks) and
+                qa_result.get('success', False) and 
+                qa_result.get('result_count', 0) > 0
+            )
+            
+            if is_ambiguous_query:
+                log_step("ambiguous_query_detected", {
+                    "query": analyzed_query,
+                    "user_query": userMessage,
+                    "sql_has_network_filter": sql_has_network_filter,
+                    "note": "Query is ambiguous - SQL filtered by network user didn't specify"
+                })
+            
+            retrieval_confidence, _ = await compute_retrieval_confidence(
+                route=route,
+                router_confidence=confidence,
+                sql_result_count=qa_result.get('result_count', 0),
+                sql_success=qa_result.get('success', False),
+                is_ambiguous_query=is_ambiguous_query,
+                query=analyzed_query,
+                sql_query=qa_result.get('sql_query', []),
+                qa_generator=qa_generator
+            )
+            
             log_step("dynamic_route_complete", {
                 "success": qa_result.get('success', False),
                 "result_count": qa_result.get('result_count', 0),
-                "search_method": qa_result.get('search_method', 'unknown')
+                "search_method": qa_result.get('search_method', 'unknown'),
+                "retrieval_confidence": retrieval_confidence,
+                "is_ambiguous_query": is_ambiguous_query
             })
             
         elif route == "hybrid":
@@ -631,6 +872,8 @@ async def processUserQuery(
             static_chunks = rerank_static_chunks(static_chunks)
             log_step("hybrid_static_retrieval_complete", {"chunks_count": len(static_chunks)})
             
+            hybrid_static_available = len(static_chunks) > 0 if static_chunks else False
+            
             qa_result = await qa_generator.generate_answer(
                 query=analyzed_query,
                 chunks=static_chunks,
@@ -641,9 +884,24 @@ async def processUserQuery(
                 route_confidence=confidence
             )
             
+            hybrid_dynamic_available = qa_result.get('success', False) and qa_result.get('result_count', 0) > 0
+            
+            retrieval_confidence, _ = await compute_retrieval_confidence(
+                route=route,
+                router_confidence=confidence,
+                static_chunks=static_chunks,
+                sql_result_count=qa_result.get('result_count', 0),
+                sql_success=qa_result.get('success', False),
+                hybrid_static_available=hybrid_static_available,
+                hybrid_dynamic_available=hybrid_dynamic_available
+            )
+            
             log_step("hybrid_route_complete", {
                 "chunks_used": qa_result.get('chunks_used', 0),
-                "search_method": qa_result.get('search_method', 'unknown')
+                "search_method": qa_result.get('search_method', 'unknown'),
+                "retrieval_confidence": retrieval_confidence,
+                "hybrid_static_available": hybrid_static_available,
+                "hybrid_dynamic_available": hybrid_dynamic_available
             })
             
         elif route == "generic":
@@ -658,7 +916,8 @@ async def processUserQuery(
             qa_result = await handle_generic_query_llm(
                 analyzed_query,
                 conversationHistory,
-                qa_generator
+                qa_generator,
+                log_step
             )
             
             if qa_generator.memory_manager and qa_generator.memory_manager.enabled:
@@ -675,14 +934,224 @@ async def processUserQuery(
             })
         
         processing_time = (datetime.now() - pipeline_start).total_seconds() * 1000
+        
+        # Static route handles its own decision logic, so skip unified threshold logic
+        if route == "static":
+            qa_result['route'] = route
+            qa_result['route_confidence'] = confidence
+            qa_result['retrievalConfidence'] = retrieval_confidence
+            qa_result['processing_time_ms'] = processing_time
+            if is_clarification_followup and clarification_info:
+                qa_result['is_clarification_followup'] = True
+                qa_result['original_query'] = clarification_info['original_query']
+            
+            log_step("pipeline_complete", {
+                "route": route,
+                "confidence": confidence,
+                "retrieval_confidence": retrieval_confidence,
+                "processing_time_ms": processing_time,
+                "is_clarification_followup": is_clarification_followup,
+                "success": True
+            })
+            
+            return qa_result
+        
+        # retrieval_confidence may have been calculated in route-specific blocks above
+        # Check if it exists and is not None, otherwise calculate it
+        if route != "generic":
+            try:
+                # Check if retrieval_confidence was already calculated in route block
+                if retrieval_confidence is None:
+                    raise NameError("retrieval_confidence is None")
+            except NameError:
+                # retrieval_confidence doesn't exist or is None, calculate it
+                # Static route already calculated it above, so this should only happen for dynamic/hybrid
+                if route == "dynamic":
+                    retrieval_confidence, _ = await compute_retrieval_confidence(
+                        route=route,
+                        router_confidence=confidence,
+                        sql_result_count=qa_result.get('result_count', 0),
+                        sql_success=qa_result.get('success', False),
+                        query=analyzed_query,
+                        sql_query=qa_result.get('sql_query', []),
+                        qa_generator=qa_generator
+                    )
+                elif route == "hybrid":
+                    hybrid_static_available = len(static_chunks) > 0 if 'static_chunks' in locals() and static_chunks else False
+                    hybrid_dynamic_available = qa_result.get('success', False) and qa_result.get('result_count', 0) > 0
+                    retrieval_confidence, _ = await compute_retrieval_confidence(
+                        route=route,
+                        router_confidence=confidence,
+                        static_chunks=static_chunks if 'static_chunks' in locals() else None,
+                        sql_result_count=qa_result.get('result_count', 0),
+                        sql_success=qa_result.get('success', False),
+                        hybrid_static_available=hybrid_static_available,
+                        hybrid_dynamic_available=hybrid_dynamic_available
+                    )
+                log_step("retrieval_confidence_calculated", {
+                    "retrieval_confidence": retrieval_confidence,
+                    "route": route
+                })
+            else:
+                # retrieval_confidence was already calculated in route block, use it
+                log_step("using_existing_retrieval_confidence", {
+                    "retrieval_confidence": retrieval_confidence,
+                    "route": route
+                })
+            
+            qa_result['retrievalConfidence'] = retrieval_confidence
+            
+            # Ensure retrieval_confidence is not None before comparison
+            if retrieval_confidence is None:
+                log_step("retrieval_confidence_none", {
+                    "route": route,
+                    "note": "Setting retrieval_confidence to 0.0 as fallback"
+                }, "warning")
+                retrieval_confidence = 0.0
+                qa_result['retrievalConfidence'] = 0.0
+            
+            # New threshold logic: 0.65 for ANSWER, 0.35 for AMBIGUITY_FLOW, below 0.35 for FALLBACK_FLOW
+            # BUT: If we have data but confidence is low, go to AMBIGUITY_FLOW instead of FALLBACK_FLOW
+            final_confidence = retrieval_confidence
+            
+            # Check if we have data available (static route already handled its own logic)
+            has_data = False
+            if route == "dynamic":
+                has_data = qa_result.get('success', False) and qa_result.get('result_count', 0) > 0
+            elif route == "hybrid":
+                has_data = (
+                    (len(static_chunks) > 0 if 'static_chunks' in locals() and static_chunks else False) or
+                    (qa_result.get('success', False) and qa_result.get('result_count', 0) > 0)
+                )
+            
+            if final_confidence >= 0.65:
+                # ANSWER: High confidence, proceed with answer
+                log_step("confidence_high_answer", {
+                    "final_confidence": final_confidence,
+                    "threshold": 0.65,
+                    "action": "ANSWER"
+                })
+            elif 0.35 <= final_confidence < 0.65:
+                # AMBIGUITY_FLOW: Medium confidence, ask for clarification
+                # Skip clarification if this is already a clarification followup (to avoid loops)
+                if not is_clarification_followup:
+                    log_step("confidence_medium_ambiguity", {
+                        "final_confidence": final_confidence,
+                        "threshold_low": 0.35,
+                        "threshold_high": 0.65,
+                        "action": "AMBIGUITY_FLOW"
+                    })
+                    
+                    clarification_result = await generate_clarification_question(
+                        query=userMessage,
+                        route=route,
+                        router_confidence=confidence,
+                        qa_generator=qa_generator,
+                        log_step=log_step
+                    )
+                    
+                    clarification_result['route'] = route
+                    clarification_result['route_confidence'] = confidence
+                    clarification_result['retrievalConfidence'] = retrieval_confidence
+                    clarification_result['processing_time_ms'] = processing_time
+                    clarification_result['original_query'] = userMessage
+                    
+                    log_step("pipeline_complete", {
+                        "route": route,
+                        "confidence": confidence,
+                        "retrieval_confidence": retrieval_confidence,
+                        "processing_time_ms": processing_time,
+                        "requires_clarification": True,
+                        "success": True
+                    })
+                    
+                    return clarification_result
+                else:
+                    # Already a clarification followup with medium confidence - log but proceed
+                    log_step("clarification_followup_medium_confidence", {
+                        "final_confidence": final_confidence,
+                        "note": "Proceeding despite medium confidence as this is already a clarification followup"
+                    }, "warning")
+            else:
+                # Low confidence (< 0.35)
+                # If we have data but confidence is low (ambiguous query), go to AMBIGUITY_FLOW
+                # Only use FALLBACK_FLOW if we truly have no data
+                if has_data and not is_clarification_followup:
+                    # We have data but query is ambiguous - ask for clarification
+                    log_step("confidence_low_but_has_data_ambiguity", {
+                        "final_confidence": final_confidence,
+                        "has_data": has_data,
+                        "threshold": 0.35,
+                        "action": "AMBIGUITY_FLOW"
+                    })
+                    
+                    clarification_result = await generate_clarification_question(
+                        query=userMessage,
+                        route=route,
+                        router_confidence=confidence,
+                        qa_generator=qa_generator,
+                        log_step=log_step
+                    )
+                    
+                    clarification_result['route'] = route
+                    clarification_result['route_confidence'] = confidence
+                    clarification_result['retrievalConfidence'] = retrieval_confidence
+                    clarification_result['processing_time_ms'] = processing_time
+                    clarification_result['original_query'] = userMessage
+                    
+                    log_step("pipeline_complete", {
+                        "route": route,
+                        "confidence": confidence,
+                        "retrieval_confidence": retrieval_confidence,
+                        "processing_time_ms": processing_time,
+                        "requires_clarification": True,
+                        "success": True
+                    })
+                    
+                    return clarification_result
+                else:
+                    # FALLBACK_FLOW: Low confidence and no data, use internet search fallback
+                    log_step("confidence_low_fallback", {
+                        "final_confidence": final_confidence,
+                        "has_data": has_data,
+                        "threshold": 0.35,
+                        "action": "FALLBACK_FLOW"
+                    })
+                    
+                    internet_result = await generate_internet_search_response(
+                        query=userMessage,
+                        qa_generator=qa_generator,
+                        log_step=log_step
+                    )
+                    
+                    internet_result['route'] = route
+                    internet_result['route_confidence'] = confidence
+                    internet_result['retrievalConfidence'] = retrieval_confidence
+                    internet_result['processing_time_ms'] = processing_time
+                    
+                    log_step("pipeline_complete", {
+                        "route": route,
+                        "confidence": confidence,
+                        "retrieval_confidence": retrieval_confidence,
+                        "processing_time_ms": processing_time,
+                        "internet_fallback": True,
+                        "success": True
+                    })
+                    
+                    return internet_result
+        
         qa_result['route'] = route
         qa_result['route_confidence'] = confidence
         qa_result['processing_time_ms'] = processing_time
+        if is_clarification_followup and clarification_info:
+            qa_result['is_clarification_followup'] = True
+            qa_result['original_query'] = clarification_info['original_query']
         
         log_step("pipeline_complete", {
             "route": route,
             "confidence": confidence,
             "processing_time_ms": processing_time,
+            "is_clarification_followup": is_clarification_followup,
             "success": True
         })
         
