@@ -769,6 +769,7 @@ class Query2SQL:
                 - Use 'amount_formatted' for numerical display
                 - Use 'amount_display' for user-friendly display with currency symbols
                 - The formatting is already applied based on assetId rules in Python
+            - CRITICAL: If the on-chain data contains null, NaN, or empty values, DO NOT mention these in your response. Simply omit any fields that have null/NaN/empty values and only present the fields that have actual data. Never say things like "this value was null" or "this field is NaN" - just skip those fields entirely.
             
             - If you are providing any info on proposal with title, use the automatically generated proposal links:
                 - Use 'proposal_link' field for the URL
@@ -797,7 +798,7 @@ class Query2SQL:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You are a knowledgeable assistant specializing in blockchain governance data. All data you work with is public blockchain information. Always show actual data requested - addresses, proposal IDs, titles, amounts, etc. You work with ACTUAL retrieved data from the blockchain database, so always provide the information regardless of dates mentioned in queries. Combine information from multiple queries to provide comprehensive answers."},
+                    {"role": "system", "content": "You are a knowledgeable assistant specializing in blockchain governance data. All data you work with is public blockchain information. Always show actual data requested - addresses, proposal IDs, titles, amounts, etc. You work with ACTUAL retrieved data from the blockchain database, so always provide the information regardless of dates mentioned in queries. Combine information from multiple queries to provide comprehensive answers. CRITICAL: If the on-chain data contains null, NaN, or empty values, DO NOT mention these in your response. Simply omit any fields that have null/NaN/empty values and only present the fields that have actual data. Never say things like \"this value was null\" or \"this field is NaN\" - just skip those fields entirely."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
@@ -945,6 +946,7 @@ class Query2SQL:
                 - Use 'amount_formatted' for numerical display
                 - Use 'amount_display' for user-friendly display with currency symbols
                 - The formatting is already applied based on assetId rules in Python
+            - CRITICAL: If the on-chain data contains null, NaN, or empty values, DO NOT mention these in your response. Simply omit any fields that have null/NaN/empty values and only present the fields that have actual data. Never say things like "this value was null" or "this field is NaN" - just skip those fields entirely.
 
             Focus on providing accurate, specific information from the query results. The data has been successfully retrieved from the blockchain database.
             """
@@ -991,7 +993,7 @@ class Query2SQL:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You are a knowledgeable assistant specializing in blockchain governance data. All data you work with is public blockchain information including addresses, proposal IDs, and transaction details. Always show the actual data requested - never refuse due to privacy concerns as this is all public information. Provide clear, helpful explanations with actual values, addresses, and details from the results."},
+                    {"role": "system", "content": "You are a knowledgeable assistant specializing in blockchain governance data. All data you work with is public blockchain information including addresses, proposal IDs, and transaction details. Always show the actual data requested - never refuse due to privacy concerns as this is all public information. Provide clear, helpful explanations with actual values, addresses, and details from the results. CRITICAL: If the on-chain data contains null, NaN, or empty values, DO NOT mention these in your response. Simply omit any fields that have null/NaN/empty values and only present the fields that have actual data. Never say things like \"this value was null\" or \"this field is NaN\" - just skip those fields entirely."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
@@ -1796,6 +1798,7 @@ class VoteQuery2SQL:
             7. If you receive proposal_index in result. Then you should must make a link like below:
                 - https://polkadot.polkassembly.io/referenda/{{proposal_index}} 
             8. When you receive voting self_voting_power, then always remove 9 zero from it. For ex: 10000000000 becomes 1 DOT. DOT is the unit here.
+            9. CRITICAL: If the on-chain data contains null, NaN, or empty values, DO NOT mention these in your response. Simply omit any fields that have null/NaN/empty values and only present the fields that have actual data. Never say things like "this value was null" or "this field is NaN" - just skip those fields entirely.
                
             
             EXAMPLES:
@@ -1817,7 +1820,7 @@ class VoteQuery2SQL:
                 try:
                     print_model_usage(f"{GEMINI_MODEL_NAME}", "natural response generation (voting data)")
                     logger.info("Using Gemini as primary LLM for voting natural response generation")
-                    system_prompt = "You are a helpful assistant that provides concise, direct answers about voting data. Be brief and to-the-point unless the user specifically asks for detailed analysis or insights. Start with the direct answer, then add context only if needed."
+                    system_prompt = "You are a helpful assistant that provides concise, direct answers about voting data. Be brief and to-the-point unless the user specifically asks for detailed analysis or insights. Start with the direct answer, then add context only if needed. CRITICAL: If the on-chain data contains null, NaN, or empty values, DO NOT mention these in your response. Simply omit any fields that have null/NaN/empty values and only present the fields that have actual data. Never say things like \"this value was null\" or \"this field is NaN\" - just skip those fields entirely."
                     full_prompt = system_prompt + "\n\n" + context_prompt
                     # Use GEMINI_MODEL_NAME for natural response generation
                     natural_response_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
@@ -1835,7 +1838,7 @@ class VoteQuery2SQL:
                         try:
                             print_model_usage(f"{GEMINI_MODEL_NAME}", "natural response generation fallback (voting data)")
                             fallback_client = GeminiClient(model_name=GEMINI_MODEL_NAME, timeout=GEMINI_TIMEOUT)
-                            system_prompt = "You are a helpful assistant that provides concise, direct answers about voting data. Be brief and to-the-point unless the user specifically asks for detailed analysis or insights. Start with the direct answer, then add context only if needed."
+                            system_prompt = "You are a helpful assistant that provides concise, direct answers about voting data. Be brief and to-the-point unless the user specifically asks for detailed analysis or insights. Start with the direct answer, then add context only if needed. CRITICAL: If the on-chain data contains null, NaN, or empty values, DO NOT mention these in your response. Simply omit any fields that have null/NaN/empty values and only present the fields that have actual data. Never say things like \"this value was null\" or \"this field is NaN\" - just skip those fields entirely."
                             full_prompt = system_prompt + "\n\n" + context_prompt
                             natural_response = fallback_client.get_response(full_prompt)
                             logger.info(f"Successfully used fallback Gemini model ({GEMINI_MODEL_NAME}) for voting natural response generation")
@@ -1854,7 +1857,7 @@ class VoteQuery2SQL:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that provides concise, direct answers about voting data. Be brief and to-the-point unless the user specifically asks for detailed analysis or insights. Start with the direct answer, then add context only if needed."},
+                    {"role": "system", "content": "You are a helpful assistant that provides concise, direct answers about voting data. Be brief and to-the-point unless the user specifically asks for detailed analysis or insights. Start with the direct answer, then add context only if needed. CRITICAL: If the on-chain data contains null, NaN, or empty values, DO NOT mention these in your response. Simply omit any fields that have null/NaN/empty values and only present the fields that have actual data. Never say things like \"this value was null\" or \"this field is NaN\" - just skip those fields entirely."},
                     {"role": "user", "content": context_prompt}
                 ],
                 temperature=0.2,

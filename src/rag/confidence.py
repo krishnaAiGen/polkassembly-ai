@@ -219,14 +219,12 @@ async def compute_retrieval_confidence(
         return (max(0.0, min(1.0, final_static_confidence)), semantic_completeness)
     
     elif route == "dynamic":
-        # New dynamic confidence formula
         semantic_completeness = 0.5
         if query and qa_generator:
             semantic_completeness = await getSemanticCompletenessScore(query, qa_generator)
         
         sql_precision = 0.0
         if sql_query and len(sql_query) > 0:
-            # Combine all SQL queries for scoring
             combined_sql = ' '.join(sql_query)
             sql_precision = getSQLPrecisionScore(combined_sql)
         
@@ -237,22 +235,36 @@ async def compute_retrieval_confidence(
             else:
                 result_specificity = 0.1
         
+        # If we have successful SQL results, trust the router confidence more
+        # Successful results indicate the query was clear enough to execute
+        has_results = sql_success and sql_result_count and sql_result_count > 0
+        
         ambiguity_penalty = 0.0
         if is_ambiguous_query:
-            ambiguity_penalty = -0.4
+            ambiguity_penalty = -0.3
         
-        # New rule: If semantic_completeness < 0.45, force ambiguity_penalty = -0.4
-        if semantic_completeness < 0.45:
-            ambiguity_penalty = -0.4
-        
-        final_confidence = (
-            0.35 * router_confidence +
-            0.35 * semantic_completeness +
-            0.20 * sql_precision +
-            0.10 * result_specificity +
-            file_fallback_bonus +
-            ambiguity_penalty
-        )
+        # Adjust weights based on whether we have results
+        # If we have results, trust router_confidence more (it was right about routing)
+        if has_results:
+            # High router confidence + results = query was clear enough
+            final_confidence = (
+                0.50 * router_confidence +
+                0.20 * semantic_completeness +
+                0.15 * sql_precision +
+                0.15 * result_specificity +
+                file_fallback_bonus +
+                ambiguity_penalty
+            )
+        else:
+            # No results - be more cautious, weight semantic completeness more
+            final_confidence = (
+                0.35 * router_confidence +
+                0.35 * semantic_completeness +
+                0.20 * sql_precision +
+                0.10 * result_specificity +
+                file_fallback_bonus +
+                ambiguity_penalty
+            )
         
         return (max(0.0, min(1.0, final_confidence)), None)
     
