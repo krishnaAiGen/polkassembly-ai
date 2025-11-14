@@ -287,133 +287,6 @@ class QAGenerator:
                 'search_method': 'web_search_failed'
             }
     
-    def _is_greeting_message(self, query: str) -> bool:
-        """
-        Check if the query is a greeting or introduction message
-        
-        Args:
-            query: User's question
-            
-        Returns:
-            True if it's a greeting message
-        """
-        greeting_keywords = [
-            'hi', 'hello', 'hey', 'greetings', 'good morning', 'good afternoon', 
-            'good evening', 'what\'s up', 'whats up', 'wassup', 'howdy',
-            'intro', 'introduction', 'who are you', 'what are you',
-            'what do you do', 'what is this', 'help', 'start'
-        ]
-        
-        query_lower = query.lower().strip()
-        
-        # Check for exact matches only (no startswith to avoid false positives like "highest" matching "help")
-        for keyword in greeting_keywords:
-            if query_lower == keyword:
-                return True
-        
-        # Check for short queries that might be greetings (but exclude data queries)
-        if len(query_lower.split()) <= 3:
-            for keyword in greeting_keywords:
-                if keyword in query_lower:
-                    # Check if it's actually a data query by looking for data-related indicators
-                    data_indicators = ['number', 'count', 'total', 'sum', 'average', 'highest', 'lowest', 
-                                       'vote', 'votes', 'voter', 'proposal', 'referendum', 'treasury',
-                                       'month', 'year', 'date', 'time', 'day', 'week']
-                    has_data_indicator = any(indicator in query_lower for indicator in data_indicators)
-                    
-                    # Only treat as greeting if it doesn't contain data indicators
-                    if not has_data_indicator:
-                        return True
-        
-        return False
-    
-    def _get_polkassembly_introduction(self) -> Dict[str, Any]:
-        """
-        Generate introduction response about Polkassembly
-        
-        Returns:
-            Dictionary with introduction answer and metadata
-        """
-        introduction = """Hello! I'm **Klara** 👋 – your AI-powered governance assistant for **Polkadot** and **Kusama**!
-
-I'm here to help you explore the governance ecosystem through **Polkassembly**, making it easy to query on-chain data, analyze proposals, and understand the voting process—all in natural language.
-
-**What I can help you with:**
-
-🗳 **Governance Data** - Query proposals, referenda, bounties, and treasury activities
-
-📊 **Voting Analysis** - Track voter behavior, delegation, and voting power
-
-💰 **Treasury Insights** - Explore funding proposals and beneficiary data
-
-🧭 **Platform Guidance** - Learn how to use Polkassembly features and OpenGov
-
-**Who I'm built for:**
-
-- Community members exploring proposals
-- Delegates analyzing voting patterns  
-- Builders tracking treasury activities
-- Researchers studying governance trends
-
-**Try asking me things like:**
-
-- "Show all active referenda on Polkadot"
-- "Who voted on referendum 472?"
-- "List treasury proposals above 100k DOT"
-- "How does conviction voting work?"
-
-**Useful Links:**
-
-- **Klara Guide**: [klara.polkassembly.io/guide](https://klara.polkassembly.io/guide) - If you want detailed guidance on how to use Klara, follow this doc
-- **Polkadot Governance**: [polkadot.polkassembly.io](https://polkadot.polkassembly.io)
-- **Kusama Governance**: [kusama.polkassembly.io](https://kusama.polkassembly.io)
-- **Documentation**: [docs.polkassembly.io](https://docs.polkassembly.io)"""
-
-        sources = [
-            {
-                'title': 'Polkassembly Main Platform',
-                'url': 'https://polkassembly.io',
-                'source_type': 'platform',
-                'similarity_score': 1.0
-            },
-            {
-                'title': 'Polkadot Governance on Polkassembly',
-                'url': 'https://polkadot.polkassembly.io',
-                'source_type': 'platform',
-                'similarity_score': 1.0
-            },
-            {
-                'title': 'Kusama Governance on Polkassembly',
-                'url': 'https://kusama.polkassembly.io',
-                'source_type': 'platform',
-                'similarity_score': 1.0
-            },
-            {
-                'title': 'Polkassembly Documentation',
-                'url': 'https://docs.polkassembly.io',
-                'source_type': 'documentation',
-                'similarity_score': 1.0
-            }
-        ]
-
-        # Generate greeting-specific follow-up questions
-        greeting_follow_ups = [
-            "How does Polkadot governance work?",
-            "What are parachains and how do they work?",
-            "How can I start staking DOT tokens?"
-        ]
-        
-        return {
-            'answer': introduction,
-            'sources': sources,
-            'confidence': 1.0,
-            'follow_up_questions': greeting_follow_ups,
-            'context_used': True,
-            'model_used': 'polkassembly_intro',
-            'chunks_used': 0,
-            'search_method': 'greeting_response'
-        }
-
     def remove_double_asterisks(self, text):
         return text.replace("**", "").replace("-", "")
     
@@ -632,6 +505,26 @@ No explanations, no markdown, just the JSON."""
             logger.warning(f"Could not parse Gemini response: {response[:200]}")
             return fallback_query
 
+    def _determine_table_from_query(self, query: str) -> Optional[str]:
+        """
+        Determine which table to use for dynamic queries based on query content.
+        
+        Args:
+            query: The user query
+            
+        Returns:
+            Table name: "governance_data" or "voting_data" or None
+        """
+        query_lower = query.lower()
+        
+        # Check for voting-related keywords
+        voting_keywords = ["voter", "vote", "voting", "delegat", "conviction", "lock period", "voting power"]
+        if any(keyword in query_lower for keyword in voting_keywords):
+            return "voting_data"
+        
+        # Default to governance_data for dynamic queries
+        return "governance_data"
+    
     def route_query(self, query):
         """
         Route query to appropriate data source using Gemini AI analysis.
@@ -774,7 +667,9 @@ No explanations, no markdown, just the JSON."""
                        chunks: List[Dict[str, Any]], 
                        custom_prompt: Optional[str] = None,
                        user_id: str = "default_user",
-                       conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                       conversation_history: Optional[List[Dict[str, Any]]] = None,
+                       route: Optional[str] = None,
+                       route_confidence: Optional[float] = None) -> Dict[str, Any]:
         """
         Generate an answer based on the query and retrieved chunks, with web search fallback
 
@@ -800,39 +695,43 @@ No explanations, no markdown, just the JSON."""
             # Print user query in green color
             print(f"\033[92m📝 User Query: {query}\033[0m")
             
-            # Check if this is a greeting message
-            if self._is_greeting_message(query):
-                logger.info("Detected greeting message, providing Polkassembly introduction")
+            # Use provided route or fallback to old routing logic for backward compatibility
+            if route is None:
+                # Legacy routing (for backward compatibility)
+                analyzed_query = self.analyze_query_with_memory(query, conversation_history)
+                logger.info(f"Original Query: {query}, Analyzed query: {analyzed_query}")
                 
-                # Handle memory for greeting
-                if self.memory_manager and self.memory_manager.enabled:
-                    self.memory_manager.add_user_query(query, user_id)
-                
-                greeting_response = self._get_polkassembly_introduction()
-                
-                # Add greeting response to memory
-                if self.memory_manager and self.memory_manager.enabled:
-                    self.memory_manager.add_assistant_response(greeting_response['answer'], user_id)
-                
-                return greeting_response
-            
-            # Analyze query with conversation history first to get context-aware query
-            analyzed_query = self.analyze_query_with_memory(query, conversation_history)
-            logger.info(f"Original Query: {query}, Analyzed query: {analyzed_query}")
-            
-            # Route the analyzed query to determine data source
-            logger.info(f"Routing analyzed query: '{analyzed_query[:50]}...'")
-            try:
-                route_result = self.route_query(analyzed_query)
-                route_result_data_source = route_result.get('data_source')
-                route_result_table = route_result.get('table')
-                logger.info(f"Route result: {route_result_data_source}")
-            except Exception as route_error:
-                logger.error(f"Error in query routing: {route_error}")
-                # Default to static processing if routing fails
-                route_result_data_source = 'STATIC'
-                route_result_table = None
-                logger.info("Falling back to static data processing due to routing error")
+                logger.info(f"Routing analyzed query: '{analyzed_query[:50]}...'")
+                try:
+                    route_result = self.route_query(analyzed_query)
+                    route_result_data_source = route_result.get('data_source')
+                    route_result_table = route_result.get('table')
+                    logger.info(f"Route result: {route_result_data_source}")
+                except Exception as route_error:
+                    logger.error(f"Error in query routing: {route_error}")
+                    route_result_data_source = 'STATIC'
+                    route_result_table = None
+                    logger.info("Falling back to static data processing due to routing error")
+            else:
+                # New routing system - route already determined
+                analyzed_query = query  # Query already analyzed in processUserQuery
+                # Map new route values to old data_source values
+                if route == 'dynamic':
+                    route_result_data_source = 'ONCHAIN'
+                    # Determine table from query (simplified - could be enhanced)
+                    route_result_table = self._determine_table_from_query(query)
+                elif route == 'hybrid':
+                    # Hybrid: process both static and dynamic
+                    route_result_data_source = 'HYBRID'
+                    route_result_table = self._determine_table_from_query(query)
+                    logger.info(f"Hybrid route detected: will execute SQL query and combine with static chunks")
+                elif route == 'generic':
+                    route_result_data_source = 'STATIC'  # Fallback to static for generic
+                    route_result_table = None
+                else:  # static
+                    route_result_data_source = 'STATIC'
+                    route_result_table = None
+                logger.info(f"Using provided route: {route} -> {route_result_data_source}, table: {route_result_table}")
             
             # Handle dynamic data source (ONCHAIN queries)
             if route_result_data_source == 'ONCHAIN':
@@ -840,10 +739,24 @@ No explanations, no markdown, just the JSON."""
                     # Use the ask_question function from query_api with conversation history
                     sql_result = ask_question(analyzed_query, conversation_history, route_result_table)
                     
-                    # Format response to match expected structure
+                    # Generate follow-up questions
+                    try:
+                        follow_up_questions = self._generate_follow_up_questions(analyzed_query, [], sql_result.get('natural_response', ''))
+                    except Exception:
+                        follow_up_questions = [
+                            "How does Polkadot's governance system work?",
+                            "What are the benefits of staking DOT tokens?",
+                            "How do parachains connect to Polkadot?"
+                        ]
+                    
+                    # Format response to match expected structure (same format as other routes)
                     return {
                         'answer': sql_result.get('natural_response', 'No response available'),
                         'sources': [],  # SQL queries don't have traditional sources
+                        'confidence': 0.9 if sql_result.get('success', False) else 0.5,
+                        'follow_up_questions': follow_up_questions,
+                        'context_used': False,
+                        'model_used': 'sql_query',
                         'chunks_used': 0,
                         'search_method': 'sql_query',
                         'sql_query': sql_result.get('sql_queries', []),
@@ -856,17 +769,48 @@ No explanations, no markdown, just the JSON."""
                     return {
                         'answer': "I'm sorry, I encountered an error processing your database query. Please try rephrasing your question or try again later.",
                         'sources': [],
-                        'chunks_used': 0,
-                        'search_method': 'sql_error_fallback',
-                        'sql_query': [],
-                        'result_count': 0,
-                        'success': False,
+                        'confidence': 0.0,
                         'follow_up_questions': [
                             "How does Polkadot's governance system work?",
                             "What are the benefits of staking DOT tokens?",
                             "How do parachains connect to Polkadot?"
-                        ]
+                        ],
+                        'context_used': False,
+                        'model_used': 'sql_query_error',
+                        'chunks_used': 0,
+                        'search_method': 'sql_error_fallback',
+                        'sql_query': [],
+                        'result_count': 0,
+                        'success': False
                     }
+            
+            # Handle hybrid route (both static and dynamic)
+            logger.debug(f"Checking route_result_data_source: {route_result_data_source}, route: {route}")
+            if route_result_data_source == 'HYBRID':
+                logger.info("Hybrid route: Entering hybrid processing block")
+                # First, get dynamic/SQL response
+                dynamic_answer = None
+                dynamic_data_available = False
+                try:
+                    logger.info(f"Hybrid route: Executing SQL query for dynamic data. Query: {analyzed_query[:100]}, Table: {route_result_table}")
+                    sql_result = ask_question(analyzed_query, conversation_history, route_result_table)
+                    dynamic_answer = sql_result.get('natural_response', '')
+                    dynamic_data_available = sql_result.get('success', False) and bool(dynamic_answer)
+                    logger.info(f"Hybrid route: SQL query completed. Success: {dynamic_data_available}, Response length: {len(dynamic_answer) if dynamic_answer else 0}, Result count: {sql_result.get('result_count', 0)}")
+                except Exception as e:
+                    logger.error(f"Error in hybrid SQL query processing: {e}", exc_info=True)
+                    dynamic_data_available = False
+                
+                # Then continue with static processing below (chunks already retrieved)
+                # The static answer will be combined with dynamic answer in the prompt
+                if dynamic_answer and dynamic_data_available:
+                    # Add dynamic answer to context for static processing
+                    analyzed_query = f"{analyzed_query}\n\nIMPORTANT: The user also requested specific data. Here is the dynamic data from the database:\n{dynamic_answer}\n\nPlease incorporate this data into your response along with the static context."
+                    logger.info(f"Hybrid route: Added dynamic data to query context. Dynamic answer preview: {dynamic_answer[:200]}")
+                elif not dynamic_data_available:
+                    logger.warning("Hybrid route: Dynamic data not available, proceeding with static only")
+            else:
+                logger.debug(f"Not hybrid route. route_result_data_source: {route_result_data_source}")
             
             # Continue with static data processing (existing logic)
             # Note: analyzed_query is already available from the routing step above
@@ -1109,6 +1053,13 @@ No explanations, no markdown, just the JSON."""
                     "How do parachains connect to Polkadot?"
                 ]
             
+            # Determine search method based on route
+            search_method = 'local_knowledge'
+            if route_result_data_source == 'HYBRID':
+                search_method = 'hybrid_static_and_dynamic'
+            elif route_result_data_source == 'STATIC':
+                search_method = 'static_embeddings'
+            
             result = {
                 'answer': answer,
                 'sources': sources,
@@ -1117,7 +1068,7 @@ No explanations, no markdown, just the JSON."""
                 'context_used': True,
                 'model_used': self.model,
                 'chunks_used': len(chunks),
-                'search_method': 'local_knowledge'
+                'search_method': search_method
             }
             
             logger.info(f"Generated answer for query: '{query[:50]}...' using {len(chunks)} chunks")
@@ -1224,6 +1175,10 @@ You will be provided with context from Polkadot documentation and forum posts. P
         # Add document context
         if context:
             prompt_parts.append(f"Context Information:\n{context}")
+        
+        # Check if query contains dynamic data (for hybrid route)
+        if "IMPORTANT: The user also requested specific data" in query or "Dynamic Data Context:" in query:
+            prompt_parts.append("NOTE: This query requires both explaining concepts AND providing specific data. Make sure to include both the explanation from the context AND the specific data requested by the user.")
         
         prompt_parts.append(f"Current Question: {query}")
         
