@@ -289,7 +289,13 @@ async def compute_retrieval_confidence(
         if hybrid_static_available and hybrid_dynamic_available:
             completeness_bonus = 0.1
         
-        return (min(base_confidence + static_confidence + dynamic_confidence + completeness_bonus + file_fallback_bonus, 1.0), None)
+        ambiguity_penalty = 0.0
+        if is_ambiguous_query:
+            ambiguity_penalty = -0.3
+        
+        final_confidence = base_confidence + static_confidence + dynamic_confidence + completeness_bonus + file_fallback_bonus + ambiguity_penalty
+        
+        return (max(0.0, min(1.0, final_confidence)), None)
     
     return (base_confidence, None)
 

@@ -176,6 +176,7 @@ class QueryResponse(BaseModel):
     processing_time_ms: float = Field(..., description="Processing time in milliseconds")
     timestamp: str = Field(..., description="Response timestamp")
     search_method: str = Field(..., description="Method used for search")
+    original_answer: Optional[str] = Field(default=None, description="Original answer with markers for conversation history")
 
 class HealthResponse(BaseModel):
     status: str
@@ -352,7 +353,10 @@ async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(aut
         logger.info(f"Query processed in {processing_time:.2f}ms for user {request.user_id} (remaining: {remaining_requests}, route: {qa_result.get('route', 'unknown')})")
         
 
-        answer = qa_result['answer']
+        original_answer = qa_result['answer']
+        answer = original_answer
+        # Strip clarification marker from displayed answer (it's visible in some UIs)
+        # Store original with marker in original_answer field for conversation history
         if answer:
             answer = re.sub(r'<!--CLARIFICATION_MARKER:[^>]+-->', '', answer).strip()
         
@@ -369,7 +373,8 @@ async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(aut
             chunks_used=qa_result.get('chunks_used', 0),
             processing_time_ms=processing_time,
             timestamp=datetime.now().isoformat(),
-            search_method=qa_result.get('search_method', 'unknown')
+            search_method=qa_result.get('search_method', 'unknown'),
+            original_answer=original_answer if '<!--CLARIFICATION_MARKER:' in original_answer else None
         )
         
     except Exception as e:

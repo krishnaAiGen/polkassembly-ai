@@ -160,20 +160,34 @@ async def detect_and_handle_clarification_response(
         - clarification_response: The user's clarification response
     """
     if not conversationHistory or len(conversationHistory) < 1:
+        log_step("clarification_check_no_history", {"note": "No conversation history available"}, "debug")
         return None
     
     # Get the last conversation entry
     last_entry = conversationHistory[-1]
     # Handle both Pydantic models and dicts
+    last_response = None
     if hasattr(last_entry, 'response'):
         last_response = last_entry.response.strip()
     elif isinstance(last_entry, dict):
         last_response = last_entry.get('response', '').strip()
+        # Also check original_answer field if response doesn't have marker
+        if last_response and '<!--CLARIFICATION_MARKER:' not in last_response:
+            original_answer = last_entry.get('original_answer', '')
+            if original_answer and '<!--CLARIFICATION_MARKER:' in original_answer:
+                last_response = original_answer.strip()
     else:
+        log_step("clarification_check_invalid_format", {"entry_type": str(type(last_entry))}, "debug")
         return None
     
     if not last_response:
+        log_step("clarification_check_empty_response", {"note": "Last response is empty"}, "debug")
         return None
+    
+    log_step("clarification_check_scanning", {
+        "last_response_preview": last_response[:200],
+        "user_message": userMessage[:100]
+    }, "debug")
     
     # Look for the embedded clarification marker
     # Try new format first: <!--CLARIFICATION_MARKER:base64_encoded_query|route|router_confidence-->
@@ -330,6 +344,10 @@ async def detect_and_handle_clarification_response(
                 return None
     
     # No marker found - not a clarification response
+    log_step("clarification_check_no_marker", {
+        "note": "No clarification marker found in last response",
+        "last_response_preview": last_response[:200] if 'last_response' in locals() else "N/A"
+    }, "debug")
     return None
 
 
@@ -564,32 +582,13 @@ async def processUserQuery(
             log_step("routing_using_stored_route", {
                 "is_clarification_followup": is_clarification_followup,
                 "stored_route": stored_route,
-                "stored_router_confidence": stored_router_confidence
+                "stored_router_confidence": stored_router_confidence,
+                "combined_query_preview": combined_query[:100]
             })
             route = stored_route
-            # Re-route the combined query to get fresh router confidence for the clarified query
-            # This gives a more accurate confidence assessment since the query is now clearer
-            log_step("routing_combined_query_for_confidence", {
-                "combined_query_preview": combined_query[:100],
-                "enforced_route": stored_route
-            })
-            route_result = await route_query_llm(
-                combined_query,
-                conversationHistory,
-                qa_generator
-            )
-            # Use the fresh router confidence from the clarified query, but enforce the stored route
-            fresh_confidence = route_result.get("confidence", 0.7)
-            suggested_route = route_result.get("route", stored_route)
-            
-            if suggested_route != stored_route:
-                log_step("routing_route_mismatch", {
-                    "stored_route": stored_route,
-                    "suggested_route": suggested_route,
-                    "note": "Using stored route but fresh confidence from clarified query"
-                }, "warning")
-            
-            confidence = fresh_confidence
+            confidence = stored_router_confidence
+            # Use the combined query as the analyzed query - don't re-route
+            analyzed_query = combined_query
         else:
             log_step("routing_start", {
                 "is_clarification_followup": is_clarification_followup,
@@ -609,8 +608,11 @@ async def processUserQuery(
         })
         
         # Use combined query if this is a clarification followup, otherwise use original
-        analyzed_query = combined_query if is_clarification_followup else userMessage
-        if conversationHistory and qa_generator:
+        # Note: If clarification was detected, analyzed_query is already set to combined_query above
+        if not is_clarification_followup:
+            analyzed_query = userMessage
+        
+        if conversationHistory and qa_generator and not is_clarification_followup:
             log_step("query_analysis_start", {})
             try:
                 # Use analyzed_query (which may be combined) for memory analysis
@@ -886,6 +888,45 @@ async def processUserQuery(
             
             hybrid_dynamic_available = qa_result.get('success', False) and qa_result.get('result_count', 0) > 0
             
+            # Check if query is ambiguous (missing network specification for dynamic part)
+            user_query_lower = userMessage.lower()
+            has_network_in_user_query = any(network in user_query_lower for network in ['polkadot', 'kusama', 'dot', 'ksm'])
+            
+            # Check if SQL query contains network filter
+            sql_queries = qa_result.get('sql_query', [])
+            sql_has_network_filter = False
+            if sql_queries:
+                if isinstance(sql_queries, list):
+                    sql_query_str = ' '.join(sql_queries).lower()
+                else:
+                    sql_query_str = str(sql_queries).lower()
+                sql_has_network_filter = 'source_network' in sql_query_str and ('polkadot' in sql_query_str or 'kusama' in sql_query_str)
+            
+            # Check if results contain multiple networks (indicating no network filter was applied)
+            results_have_multiple_networks = False
+            if qa_result.get('success', False) and qa_result.get('result_count', 0) > 0:
+                # If SQL doesn't have network filter, assume it returned both networks
+                results_have_multiple_networks = not sql_has_network_filter
+            
+            # Query is ambiguous if:
+            # 1. User didn't specify network, AND
+            # 2. (SQL filtered by a network user didn't specify OR SQL returned both networks), AND
+            # 3. SQL got results
+            is_ambiguous_query = (
+                not has_network_in_user_query and 
+                (sql_has_network_filter or results_have_multiple_networks) and
+                qa_result.get('success', False) and 
+                qa_result.get('result_count', 0) > 0
+            )
+            
+            if is_ambiguous_query:
+                log_step("ambiguous_query_detected_hybrid", {
+                    "query": analyzed_query,
+                    "user_query": userMessage,
+                    "sql_has_network_filter": sql_has_network_filter,
+                    "note": "Hybrid query is ambiguous - SQL filtered by network user didn't specify"
+                })
+            
             retrieval_confidence, _ = await compute_retrieval_confidence(
                 route=route,
                 router_confidence=confidence,
@@ -893,7 +934,11 @@ async def processUserQuery(
                 sql_result_count=qa_result.get('result_count', 0),
                 sql_success=qa_result.get('success', False),
                 hybrid_static_available=hybrid_static_available,
-                hybrid_dynamic_available=hybrid_dynamic_available
+                hybrid_dynamic_available=hybrid_dynamic_available,
+                is_ambiguous_query=is_ambiguous_query,
+                query=analyzed_query,
+                sql_query=qa_result.get('sql_query', []),
+                qa_generator=qa_generator
             )
             
             log_step("hybrid_route_complete", {
@@ -901,7 +946,8 @@ async def processUserQuery(
                 "search_method": qa_result.get('search_method', 'unknown'),
                 "retrieval_confidence": retrieval_confidence,
                 "hybrid_static_available": hybrid_static_available,
-                "hybrid_dynamic_available": hybrid_dynamic_available
+                "hybrid_dynamic_available": hybrid_dynamic_available,
+                "is_ambiguous_query": is_ambiguous_query
             })
             
         elif route == "generic":
