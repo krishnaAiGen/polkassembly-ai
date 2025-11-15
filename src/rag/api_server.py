@@ -7,6 +7,7 @@ Provides endpoints for querying the knowledge base and getting AI-generated answ
 import os
 import sys
 import logging
+import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -29,6 +30,7 @@ from ..guardrail.guardrail import check_with_guardrail_async
 from ..utils.rate_limiter import check_rate_limit, get_client_stats
 from .chunks_reranker import rerank_static_chunks
 from ..utils.slack_bot import SlackBot
+from .query_processor import processUserQuery
 
 # Configure logging
 logging.basicConfig(
@@ -174,6 +176,7 @@ class QueryResponse(BaseModel):
     processing_time_ms: float = Field(..., description="Processing time in milliseconds")
     timestamp: str = Field(..., description="Response timestamp")
     search_method: str = Field(..., description="Method used for search")
+    original_answer: Optional[str] = Field(default=None, description="Original answer with markers for conversation history")
 
 class HealthResponse(BaseModel):
     status: str
@@ -267,65 +270,33 @@ async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(aut
             logger.error(f"Guardrail error for user {request.user_id}: {guardrail_result['reason']}")
             # Continue processing if guardrail fails - don't block legitimate queries due to technical issues
         
-        # Search for relevant chunks in both collections
-        static_chunks = static_embedding_manager.search_similar_chunks(
-            query=request.question,
-            n_results=request.max_chunks
-        )
-        # print("\033[92mAll the static chunks are\033[0m", static_chunks)
-
-        # Apply reranking to prioritize chunks with images
-        static_chunks = rerank_static_chunks(static_chunks)
-        dynamic_chunks = []
-       
-        # Get max similarity score from each collection
-        static_max_score = max([chunk['similarity_score'] for chunk in static_chunks]) if static_chunks else 0
-        dynamic_max_score = max([chunk['similarity_score'] for chunk in dynamic_chunks]) if dynamic_chunks else 0
-
-        # Use chunks from the collection with higher max similarity score
-        chunks = static_chunks if static_max_score >= dynamic_max_score else dynamic_chunks
-        max_score = max(static_max_score, dynamic_max_score)
-        logger.info(f"for {request.question}, max score is, {max_score}")
-        which_chunk = "static" if static_max_score >= dynamic_max_score else "dynamic"
-        logger.info(f"Genrating response from {which_chunk}")
-
-
-        if not chunks:
-            # Generate fallback follow-up questions when no results found
-            fallback_questions = [
-                "How does Polkadot differ from other blockchains?",
-                "What are the main benefits of using Polkadot?", 
-                "How can I get started with Polkadot?"
+    
+        conversation_history_dicts = None
+        if request.conversation_history:
+            conversation_history_dicts = [
+                {
+                    'query': msg.query,
+                    'response': msg.response,
+                    'timestamp': msg.timestamp
+                }
+                for msg in request.conversation_history
             ]
-            
-            processing_time = (datetime.now() - start_time).total_seconds() * 1000
-            
-            return QueryResponse(
-                answer="I couldn't find relevant information to answer your question. Please try rephrasing your query or ask about a different topic.",
-                sources=[],
-                follow_up_questions=fallback_questions,
-                remaining_requests=remaining_requests,
-                confidence=0.0,
-                context_used=False,
-                model_used=Config.OPENAI_MODEL,
-                chunks_used=0,
-                processing_time_ms=processing_time,
-                timestamp=datetime.now().isoformat(),
-                search_method="no_results"
-            )
         
-        # Generate answer using QA generator
+        # Use new query processing pipeline
         try:
-            qa_result = await qa_generator.generate_answer(
-                query=request.question,
-                chunks=chunks,
+            qa_result = await processUserQuery(
+                userMessage=request.question,
+                conversationHistory=conversation_history_dicts,
+                static_embedding_manager=static_embedding_manager,
+                dynamic_embedding_manager=dynamic_embedding_manager,
+                qa_generator=qa_generator,
+                max_chunks=request.max_chunks,
                 custom_prompt=request.custom_prompt,
-                user_id=request.user_id,
-                conversation_history=request.conversation_history
+                user_id=request.user_id
             )
         except Exception as qa_error:
             # Log the error locally
-            logger.error(f"Error in qa_generator.generate_answer: {qa_error}")
+            logger.error(f"Error in processUserQuery: {qa_error}")
             
             # Send error details to Slack if available
             if slack_bot:
@@ -334,11 +305,10 @@ async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(aut
                         "query": request.question,
                         "user_id": request.user_id,
                         "timestamp": datetime.now().isoformat(),
-                        "error_type": "qa_generator_error",
-                        "chunks_count": len(chunks) if chunks else 0
+                        "error_type": "query_processor_error"
                     }
                     slack_bot.post_error_to_slack(
-                        error_message=f"QA Generator Error: {str(qa_error)}",
+                        error_message=f"Query Processor Error: {str(qa_error)}",
                         context=error_context
                     )
                 except Exception as slack_error:
@@ -358,10 +328,10 @@ async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(aut
                 confidence=0.0,
                 context_used=False,
                 model_used=Config.OPENAI_MODEL,
-                chunks_used=len(chunks) if chunks else 0,
+                chunks_used=0,
                 processing_time_ms=processing_time,
                 timestamp=datetime.now().isoformat(),
-                search_method="qa_generator_error"
+                search_method="query_processor_error"
             )
         
         # Format sources if requested
@@ -377,13 +347,23 @@ async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(aut
                 for src in qa_result.get('sources', [])
             ]
         
-        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        # Use processing time from qa_result if available, otherwise calculate
+        processing_time = qa_result.get('processing_time_ms', (datetime.now() - start_time).total_seconds() * 1000)
         
-        logger.info(f"Query processed in {processing_time:.2f}ms for user {request.user_id} (remaining: {remaining_requests})")
-        print(qa_result['answer'])
+        logger.info(f"Query processed in {processing_time:.2f}ms for user {request.user_id} (remaining: {remaining_requests}, route: {qa_result.get('route', 'unknown')})")
+        
+
+        original_answer = qa_result['answer']
+        answer = original_answer
+        # Strip clarification marker from displayed answer (it's visible in some UIs)
+        # Store original with marker in original_answer field for conversation history
+        if answer:
+            answer = re.sub(r'<!--CLARIFICATION_MARKER:[^>]+-->', '', answer).strip()
+        
+        print(answer)
 
         return QueryResponse(
-            answer=qa_result['answer'],
+            answer=answer,
             sources=sources,
             follow_up_questions=qa_result.get('follow_up_questions', []),
             remaining_requests=remaining_requests,
@@ -393,7 +373,8 @@ async def query_chatbot(request: QueryRequest, authenticated: bool = Depends(aut
             chunks_used=qa_result.get('chunks_used', 0),
             processing_time_ms=processing_time,
             timestamp=datetime.now().isoformat(),
-            search_method=qa_result.get('search_method', 'unknown')
+            search_method=qa_result.get('search_method', 'unknown'),
+            original_answer=original_answer if '<!--CLARIFICATION_MARKER:' in original_answer else None
         )
         
     except Exception as e:

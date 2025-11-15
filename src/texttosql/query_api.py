@@ -48,7 +48,7 @@ def send_error_to_slack(query: str, error: str, error_source: str = "Query2SQL")
     except Exception as slack_error:
         print(f"Failed to send error notification to Slack: {slack_error}")
 
-def ask_question(question: str, conversation_history: Optional[List[Dict[str, Any]]] = None, table: Optional[str] = None) -> dict:
+def ask_question(question: str, conversation_history: Optional[List[Dict[str, Any]]] = None, table: Optional[str] = None, embedding_manager=None) -> dict:
     """
     Simple function to ask a natural language question and get results
     
@@ -56,6 +56,7 @@ def ask_question(question: str, conversation_history: Optional[List[Dict[str, An
         question (str): Natural language question about governance or voting data
         conversation_history: Previous conversation context
         table (str): Target table - 'governance_data' or 'voting_data'
+        embedding_manager: Optional EmbeddingManager for dynamic Chroma collection (governance only)
         
     Returns:
         dict: Response containing SQL query, results, and natural language answer
@@ -68,7 +69,8 @@ def ask_question(question: str, conversation_history: Optional[List[Dict[str, An
             processor = VoteQuery2SQL()
         else:
             # Default to governance data processor
-            processor = Query2SQL()
+            # Pass embedding_manager for contextual SQL generation
+            processor = Query2SQL(embedding_manager=embedding_manager)
         
         # Process the question with conversation history
         result = processor.process_query(question, conversation_history)
