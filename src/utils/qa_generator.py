@@ -507,160 +507,109 @@ No explanations, no markdown, just the JSON."""
 
     def _determine_table_from_query(self, query: str) -> Optional[str]:
         """
-        Determine which table to use for dynamic queries based on query content.
+        Determine which table to use for dynamic queries based on query content using LLM.
         
         Args:
             query: The user query
             
         Returns:
-            Table name: "governance_data" or "voting_data" or None
-        """
-        query_lower = query.lower()
-        
-        # Check for voting-related keywords
-        voting_keywords = ["voter", "vote", "voting", "delegat", "conviction", "lock period", "voting power"]
-        if any(keyword in query_lower for keyword in voting_keywords):
-            return "voting_data"
-        
-        # Default to governance_data for dynamic queries
-        return "governance_data"
-    
-    def route_query(self, query):
-        """
-        Route query to appropriate data source using Gemini AI analysis.
-        Returns a dictionary with data_source and table (if applicable).
+            Table name: "governance_data" or "voting_data"
         """
         import json
         
-        # Prompt for Gemini to analyze the query
-        analysis_prompt = f"""
-            Analyze this user query and determine which data source and table it should use:
+        prompt = f"""You are a query classifier for a blockchain governance database. Determine which table to query.
 
-            Query: "{query}"
+Query: "{query}"
 
-            Data Sources:
-            
-            1. STATIC - For general educational/informational topics:
-            - Governance/OpenGov concepts and explanations
-            - Ambassador Programme information  
-            - Parachains & AnV explanations
-            - Hyperbridge, JAM definitions
-            - Dashboard information (Frequency, People, Stellaswap)
-            - Wiki pages, how-to guides, tutorials
-            - General "what is" or "how does" questions without specific data requests
+Tables:
 
-            2. ONCHAIN - For blockchain data queries. Choose the appropriate table:
-            
-            a) Table: "governance_data" - Use when query involves:
-                - Proposal information (title, content, description, hash)
-                - Proposal metadata (status, type, dates, network)
-                - Proposer addresses and beneficiaries
-                - Financial amounts (rewards, transfers, beneficiary amounts)
-                - Proposal metrics (likes, dislikes, comments)
-                - Voting decisions on proposals(Aye/Nay/Abstain)
-                - Proposal filtering by:
-                    * Index/ID numbers (e.g., "proposal 1679", "referendum 234")
-                    * Dates (created, updated, before/after/between dates)
-                    * Network (Kusama/Polkadot)
-                    * Type (ReferendumV2, Bounty, Treasury, etc.)
-                    * Status (Executed, Rejected, Deciding, etc.)
-                    * Data source (subsquare/polkassembly)
-                - Proposal counts, aggregations, or summaries
-                - Keywords: "proposal", "referendum", "bounty", "treasury", "motion"
-                
-                Examples:
-                - "Show me recent proposals"
-                - "Find proposals with amount > 10000 DOT"
-                - "What's the status of proposal 1679?"
-                - "Count rejected proposals in 2024"
-                - "Show treasury proposals by address X"
-                - "List proposals about topic Y"
+1. governance_data - Contains proposal information:
+   - Proposal details (title, content, description, status, type)
+   - Proposal metadata (dates, network, proposer)
+   - Financial data (amounts, beneficiaries, asset IDs)
+   - Proposal metrics (likes, comments)
+   - Examples:
+     * "Show me recent treasury proposals"
+     * "What's the status of proposal 123?"
+     * "Find proposals requesting more than 10000 DOT"
+     * "List all executed referendums"
+     * "Who proposed referendum 456?"
+     * "Show me proposals about topic X"
 
-            b) Table: "voting_data" - Use when query involves:
-                - Voter information and voter accounts
-                - Vote delegation (delegated votes, delegation chains)
-                - Voting power or locked amounts
-                - Lock periods or conviction voting
-                - Vote timestamps (created_at, removed_at)
-                - Voter counts or voting statistics
-                - Voting patterns or behavior analysis
-                - Keywords: "voter", "vote", "voting", "delegat", "conviction", "lock period"
-                
-                Examples:
-                - "How many voters participated in proposal 123?"
-                - "Show me votes with >1000 DOT voting power"
-                - "Count total voters in July 2024"
-                - "Who voted Aye on referendum 456?"
-                - "List delegated votes for proposal X"
-                - "What was voter Y's decision on proposal Z?"
-                - "Show me votes with 6x conviction"
+2. voting_data - Contains voter activity and behavior:
+   - Voter accounts and addresses
+   - Vote decisions (Aye/Nay/Abstain)
+   - Voting power and locked amounts
+   - Conviction multipliers and lock periods
+   - Vote delegation
+   - Voting timestamps
+   - Examples:
+     * "How many people voted on proposal 123?"
+     * "Show me votes with 6x conviction"
+     * "Who voted Aye on referendum 456?"
+     * "List voters with >1000 DOT voting power"
+     * "Show delegated votes for proposal X"
+     * "What was voter Y's decision?"
+     * "Count unique voters in the last 30 days"
 
-            Decision Logic:
-            - If query asks about VOTER behavior, decisions, or participation → "voting_data"
-            - If query asks about PROPOSAL details, status, or metadata → "governance_data"
-            - If query is conceptual/educational without specific data requests → "STATIC"
-            - If query mentions both proposals AND voters, prioritize based on main intent:
-            * Main focus on "how people voted" → "voting_data"
-            * Main focus on "proposal details" → "governance_data"
+Decision Rules:
+- If query asks about WHO voted, HOW people voted, VOTER behavior → voting_data
+- If query asks about WHAT proposals exist, proposal STATUS, proposal DETAILS → governance_data
+- If query mentions both, prioritize the main focus:
+  * "Show me voters who participated in treasury proposals" → voting_data (focus: voters)
+  * "Show me treasury proposals and their vote counts" → governance_data (focus: proposals)
 
-            Respond ONLY with valid JSON in this exact format:
-            {{
-                "data_source": "STATIC" or "ONCHAIN",
-                "table": "governance_data" or "voting_data" (only if data_source is ONCHAIN, otherwise null)
-            }}
-        """
+Respond with ONLY valid JSON:
+{{"table": "governance_data"}} or {{"table": "voting_data"}}"""
 
         try:
-            # Use Gemini to analyze the query
+            # Try Gemini first (faster)
             if self.gemini_client:
-                # Get the actual model name from the client
-                model_name = getattr(self.gemini_client, 'model_name', 'Gemini')
-                print_model_usage(f"{model_name}", "query routing")
-                response = self.gemini_client.get_response(analysis_prompt)
+                response = self.gemini_client.get_response(prompt)
+                response = response.strip()
                 
-                # Try to parse JSON response
+                # Parse JSON
                 try:
-                    result = json.loads(response.strip())
-                    data_source = result.get('data_source', 'STATIC')
-                    table = result.get('table', None)
-                    
-                    return {
-                        'data_source': data_source,
-                        'table': table if data_source == 'ONCHAIN' else None
-                    }
-                    
+                    result = json.loads(response)
+                    table = result.get('table', 'governance_data')
+                    if table in ['governance_data', 'voting_data']:
+                        logger.info(f"Table selected by Gemini: {table}")
+                        return table
                 except json.JSONDecodeError:
-                    # If JSON parsing fails, extract from response text
-                    if "onchain" in response.lower():
-                        # Try to determine table from response content
-                        if "voting" in response.lower() or "voter" in response.lower():
-                            table = "voting_data"
-                        else:
-                            table = "governance_data"
-                        return {
-                            'data_source': 'ONCHAIN',
-                            'table': table
-                        }
-                    else:
-                        return {
-                            'data_source': 'STATIC',
-                            'table': None
-                        }
-            else:
-                # Fallback if no Gemini client
-                return {
-                    'data_source': 'STATIC',
-                    'table': None
-                }
+                    # Extract table name from text if JSON parsing fails
+                    if 'voting_data' in response.lower():
+                        logger.info("Table selected by Gemini (text parsing): voting_data")
+                        return "voting_data"
+            
+            # Fallback to OpenAI
+            if self.client:
+                response = self.client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    max_tokens=50
+                )
+                response_text = response.choices[0].message.content.strip()
                 
-        except Exception as e:
-            logger.error(f"Error in route_query: {e}")
-            # Default fallback
-            return {
-                'data_source': 'STATIC',
-                'table': None
-            }
+                # Parse JSON
+                try:
+                    result = json.loads(response_text)
+                    table = result.get('table', 'governance_data')
+                    if table in ['governance_data', 'voting_data']:
+                        logger.info(f"Table selected by OpenAI: {table}")
+                        return table
+                except json.JSONDecodeError:
+                    # Extract table name from text if JSON parsing fails
+                    if 'voting_data' in response_text.lower():
+                        logger.info("Table selected by OpenAI (text parsing): voting_data")
+                        return "voting_data"
         
+        except Exception as e:
+            logger.warning(f"Error in LLM table selection: {e}")
+        
+        # Default fallback to governance_data
+        logger.info("Table selected (fallback): governance_data")
+        return "governance_data"
 
     async def generate_answer(self, 
                        query: str, 
@@ -669,7 +618,8 @@ No explanations, no markdown, just the JSON."""
                        user_id: str = "default_user",
                        conversation_history: Optional[List[Dict[str, Any]]] = None,
                        route: Optional[str] = None,
-                       route_confidence: Optional[float] = None) -> Dict[str, Any]:
+                       route_confidence: Optional[float] = None,
+                       dynamic_embedding_manager=None) -> Dict[str, Any]:
         """
         Generate an answer based on the query and retrieved chunks, with web search fallback
 
@@ -695,49 +645,67 @@ No explanations, no markdown, just the JSON."""
             # Print user query in green color
             print(f"\033[92m📝 User Query: {query}\033[0m")
             
-            # Use provided route or fallback to old routing logic for backward compatibility
-            if route is None:
-                # Legacy routing (for backward compatibility)
-                analyzed_query = self.analyze_query_with_memory(query, conversation_history)
-                logger.info(f"Original Query: {query}, Analyzed query: {analyzed_query}")
-                
-                logger.info(f"Routing analyzed query: '{analyzed_query[:50]}...'")
-                try:
-                    route_result = self.route_query(analyzed_query)
-                    route_result_data_source = route_result.get('data_source')
-                    route_result_table = route_result.get('table')
-                    logger.info(f"Route result: {route_result_data_source}")
-                except Exception as route_error:
-                    logger.error(f"Error in query routing: {route_error}")
-                    route_result_data_source = 'STATIC'
-                    route_result_table = None
-                    logger.info("Falling back to static data processing due to routing error")
-            else:
-                # New routing system - route already determined
-                analyzed_query = query  # Query already analyzed in processUserQuery
-                # Map new route values to old data_source values
-                if route == 'dynamic':
-                    route_result_data_source = 'ONCHAIN'
-                    # Determine table from query (simplified - could be enhanced)
-                    route_result_table = self._determine_table_from_query(query)
-                elif route == 'hybrid':
-                    # Hybrid: process both static and dynamic
-                    route_result_data_source = 'HYBRID'
-                    route_result_table = self._determine_table_from_query(query)
-                    logger.info(f"Hybrid route detected: will execute SQL query and combine with static chunks")
-                elif route == 'generic':
-                    route_result_data_source = 'STATIC'  # Fallback to static for generic
-                    route_result_table = None
-                else:  # static
-                    route_result_data_source = 'STATIC'
-                    route_result_table = None
-                logger.info(f"Using provided route: {route} -> {route_result_data_source}, table: {route_result_table}")
+            # Route is provided by query_processor.py
+            analyzed_query = query  # Query already analyzed in processUserQuery
+            
+            # Map route values to data_source values for internal processing
+            if route == 'dynamic':
+                route_result_data_source = 'ONCHAIN'
+                route_result_table = self._determine_table_from_query(query)
+            elif route == 'hybrid':
+                route_result_data_source = 'HYBRID'
+                route_result_table = self._determine_table_from_query(query)
+                logger.info(f"Hybrid route detected: will execute SQL query and combine with static chunks")
+            elif route == 'generic':
+                route_result_data_source = 'STATIC'
+                route_result_table = None
+            else:  # static
+                route_result_data_source = 'STATIC'
+                route_result_table = None
+            
+            logger.info(f"Using route: {route} -> {route_result_data_source}, table: {route_result_table}")
             
             # Handle dynamic data source (ONCHAIN queries)
             if route_result_data_source == 'ONCHAIN':
                 try:
                     # Use the ask_question function from query_api with conversation history
-                    sql_result = ask_question(analyzed_query, conversation_history, route_result_table)
+                    # Pass dynamic_embedding_manager for contextual SQL generation (governance only)
+                    sql_result = ask_question(analyzed_query, conversation_history, route_result_table, dynamic_embedding_manager)
+                    
+                    # Check if SQL precision was too low (requires clarification)
+                    if sql_result.get('requires_clarification', False):
+                        return {
+                            'answer': '',
+                            'sources': [],
+                            'confidence': 0.0,
+                            'follow_up_questions': [],
+                            'context_used': False,
+                            'model_used': 'sql_query',
+                            'chunks_used': 0,
+                            'search_method': 'sql_precision_too_low',
+                            'sql_query': sql_result.get('sql_queries', []),
+                            'result_count': 0,
+                            'success': False,
+                            'requires_clarification': True,
+                            'sql_precision': sql_result.get('sql_precision', 0.0)
+                        }
+                    
+                    # Check if no results found (requires fallback)
+                    if sql_result.get('requires_fallback', False):
+                        return {
+                            'answer': '',
+                            'sources': [],
+                            'confidence': 0.0,
+                            'follow_up_questions': [],
+                            'context_used': False,
+                            'model_used': 'sql_query',
+                            'chunks_used': 0,
+                            'search_method': 'no_results',
+                            'sql_query': sql_result.get('sql_queries', []),
+                            'result_count': 0,
+                            'success': False,
+                            'requires_fallback': True
+                        }
                     
                     # Generate follow-up questions
                     try:
@@ -793,7 +761,7 @@ No explanations, no markdown, just the JSON."""
                 dynamic_data_available = False
                 try:
                     logger.info(f"Hybrid route: Executing SQL query for dynamic data. Query: {analyzed_query[:100]}, Table: {route_result_table}")
-                    sql_result = ask_question(analyzed_query, conversation_history, route_result_table)
+                    sql_result = ask_question(analyzed_query, conversation_history, route_result_table, dynamic_embedding_manager)
                     dynamic_answer = sql_result.get('natural_response', '')
                     dynamic_data_available = sql_result.get('success', False) and bool(dynamic_answer)
                     logger.info(f"Hybrid route: SQL query completed. Success: {dynamic_data_available}, Response length: {len(dynamic_answer) if dynamic_answer else 0}, Result count: {sql_result.get('result_count', 0)}")

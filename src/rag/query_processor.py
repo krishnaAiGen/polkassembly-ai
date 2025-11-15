@@ -368,10 +368,24 @@ async def route_query_llm(
     log_step("router_llm_start", {"query_preview": query[:100]})
     
     try:
+        # Build conversation context for routing
+        conversation_context = ""
+        if conversation_history and len(conversation_history) > 0:
+            recent_messages = conversation_history[-3:]  # Last 3 messages for context
+            context_parts = []
+            for msg in recent_messages:
+                if isinstance(msg, dict):
+                    role = msg.get('role', '')
+                    content = msg.get('content', '') or msg.get('response', '') or msg.get('answer', '')
+                    if content and len(content) > 5:
+                        context_parts.append(f"{role}: {content[:100]}")
+            if context_parts:
+                conversation_context = f"\n\nRecent conversation context:\n" + "\n".join(context_parts)
+        
         routing_prompt = f"""
 You are a query router. Analyze this user query and determine the best route for answering it.
 
-Query: "{query}"
+Query: "{query}"{conversation_context}
 
 Available Routes:
 1. "static" - For general educational/informational topics:
@@ -577,38 +591,8 @@ async def processUserQuery(
             original_query_for_route = clarification_info['original_query']
             combined_query = clarification_info['combined_query']
         
-        # Use stored route if available (from clarification followup), otherwise route normally
-        if stored_route and stored_route in ['static', 'dynamic', 'hybrid', 'generic']:
-            log_step("routing_using_stored_route", {
-                "is_clarification_followup": is_clarification_followup,
-                "stored_route": stored_route,
-                "stored_router_confidence": stored_router_confidence,
-                "combined_query_preview": combined_query[:100]
-            })
-            route = stored_route
-            confidence = stored_router_confidence
-            # Use the combined query as the analyzed query - don't re-route
-            analyzed_query = combined_query
-        else:
-            log_step("routing_start", {
-                "is_clarification_followup": is_clarification_followup,
-                "query_for_routing": original_query_for_route[:100]
-            })
-            route_result = await route_query_llm(
-                original_query_for_route,
-                conversationHistory,
-                qa_generator
-            )
-            route = route_result["route"]
-            confidence = route_result["confidence"]
-        log_step("routing_complete", {
-            "route": route,
-            "confidence": confidence,
-            "is_clarification_followup": is_clarification_followup
-        })
-        
+        # Analyze query with memory FIRST, then route on the analyzed query
         # Use combined query if this is a clarification followup, otherwise use original
-        # Note: If clarification was detected, analyzed_query is already set to combined_query above
         if not is_clarification_followup:
             analyzed_query = userMessage
         
@@ -629,6 +613,36 @@ async def processUserQuery(
                 log_step("query_analysis_error", {"error": str(e)}, "error")
                 # Keep the analyzed_query (combined or original) on error
                 pass
+        
+        # Use stored route if available (from clarification followup), otherwise route normally
+        if stored_route and stored_route in ['static', 'dynamic', 'hybrid', 'generic']:
+            log_step("routing_using_stored_route", {
+                "is_clarification_followup": is_clarification_followup,
+                "stored_route": stored_route,
+                "stored_router_confidence": stored_router_confidence,
+                "combined_query_preview": combined_query[:100]
+            })
+            route = stored_route
+            confidence = stored_router_confidence
+            # Use the combined query as the analyzed query - don't re-route
+            analyzed_query = combined_query
+        else:
+            log_step("routing_start", {
+                "is_clarification_followup": is_clarification_followup,
+                "query_for_routing": analyzed_query[:100]
+            })
+            route_result = await route_query_llm(
+                analyzed_query,
+                conversationHistory,
+                qa_generator
+            )
+            route = route_result["route"]
+            confidence = route_result["confidence"]
+        log_step("routing_complete", {
+            "route": route,
+            "confidence": confidence,
+            "is_clarification_followup": is_clarification_followup
+        })
         
         processing_time = (datetime.now() - pipeline_start).total_seconds() * 1000
         
@@ -796,6 +810,47 @@ async def processUserQuery(
         elif route == "dynamic":
             log_step("dynamic_route_start", {})
             
+            from .confidence import getSemanticCompletenessScore
+            
+            semantic_score = await getSemanticCompletenessScore(analyzed_query, qa_generator)
+            log_step("semantic_completeness_check", {
+                "semantic_score": semantic_score,
+                "threshold": 0.35
+            })
+            
+            if semantic_score < 0.35:
+                log_step("semantic_completeness_low", {
+                    "semantic_score": semantic_score,
+                    "action": "triggering_ambiguity_flow"
+                })
+                
+                clarification_result = await generate_clarification_question(
+                    query=userMessage,
+                    route=route,
+                    router_confidence=confidence,
+                    qa_generator=qa_generator,
+                    log_step=log_step
+                )
+                
+                clarification_result['route'] = route
+                clarification_result['route_confidence'] = confidence
+                clarification_result['retrievalConfidence'] = 0.0
+                clarification_result['processing_time_ms'] = (datetime.now() - pipeline_start).total_seconds() * 1000
+                clarification_result['original_query'] = userMessage
+                clarification_result['semanticCompleteness'] = semantic_score
+                
+                log_step("pipeline_complete", {
+                    "route": route,
+                    "confidence": confidence,
+                    "retrieval_confidence": 0.0,
+                    "processing_time_ms": clarification_result['processing_time_ms'],
+                    "requires_clarification": True,
+                    "semantic_completeness": semantic_score,
+                    "success": True
+                })
+                
+                return clarification_result
+            
             qa_result = await qa_generator.generate_answer(
                 query=analyzed_query,
                 chunks=[],
@@ -803,8 +858,74 @@ async def processUserQuery(
                 user_id=user_id,
                 conversation_history=conversationHistory,
                 route=route,
-                route_confidence=confidence
+                route_confidence=confidence,
+                dynamic_embedding_manager=dynamic_embedding_manager
             )
+            
+            # Handle SQL precision too low (requires clarification)
+            if qa_result.get('requires_clarification', False) and qa_result.get('search_method') == 'sql_precision_too_low':
+                sql_precision = qa_result.get('sql_precision', 0.0)
+                log_step("sql_precision_too_low", {
+                    "sql_precision": sql_precision,
+                    "threshold": 0.3,
+                    "action": "triggering_ambiguity_flow"
+                })
+                
+                clarification_result = await generate_clarification_question(
+                    query=userMessage,
+                    route=route,
+                    router_confidence=confidence,
+                    qa_generator=qa_generator,
+                    log_step=log_step
+                )
+                
+                clarification_result['route'] = route
+                clarification_result['route_confidence'] = confidence
+                clarification_result['retrievalConfidence'] = 0.0
+                clarification_result['processing_time_ms'] = (datetime.now() - pipeline_start).total_seconds() * 1000
+                clarification_result['original_query'] = userMessage
+                clarification_result['sqlPrecision'] = sql_precision
+                
+                log_step("pipeline_complete", {
+                    "route": route,
+                    "confidence": confidence,
+                    "retrieval_confidence": 0.0,
+                    "processing_time_ms": clarification_result['processing_time_ms'],
+                    "requires_clarification": True,
+                    "sql_precision": sql_precision,
+                    "success": True
+                })
+                
+                return clarification_result
+            
+            # Handle no results (requires fallback)
+            if qa_result.get('requires_fallback', False) and qa_result.get('search_method') == 'no_results':
+                log_step("no_results_fallback", {
+                    "result_count": qa_result.get('result_count', 0),
+                    "action": "triggering_fallback_flow"
+                })
+                
+                internet_result = await generate_internet_search_response(
+                    query=userMessage,
+                    qa_generator=qa_generator,
+                    log_step=log_step
+                )
+                
+                internet_result['route'] = route
+                internet_result['route_confidence'] = confidence
+                internet_result['retrievalConfidence'] = 0.0
+                internet_result['processing_time_ms'] = (datetime.now() - pipeline_start).total_seconds() * 1000
+                
+                log_step("pipeline_complete", {
+                    "route": route,
+                    "confidence": confidence,
+                    "retrieval_confidence": 0.0,
+                    "processing_time_ms": internet_result['processing_time_ms'],
+                    "internet_fallback": True,
+                    "success": True
+                })
+                
+                return internet_result
             
             # Check if query is ambiguous (missing network specification)
             # Ambiguous if: user didn't specify network AND (SQL filtered by network OR SQL returned both networks)
@@ -815,7 +936,10 @@ async def processUserQuery(
             sql_queries = qa_result.get('sql_query', [])
             sql_has_network_filter = False
             if sql_queries:
-                sql_query_str = ' '.join(sql_queries).lower()
+                if isinstance(sql_queries, list):
+                    sql_query_str = ' '.join(sql_queries).lower()
+                else:
+                    sql_query_str = str(sql_queries).lower()
                 sql_has_network_filter = 'source_network' in sql_query_str and ('polkadot' in sql_query_str or 'kusama' in sql_query_str)
             
             # Check if results contain multiple networks (indicating no network filter was applied)
@@ -855,13 +979,104 @@ async def processUserQuery(
                 qa_generator=qa_generator
             )
             
+            result_count = qa_result.get('result_count', 0)
+            final_confidence = retrieval_confidence
+            
+            # Updated decision logic for dynamic route
+            decision = None
+            if result_count > 0:
+                if final_confidence >= 0.65:
+                    decision = "ANSWER"
+                else:
+                    decision = "AMBIGUITY_FLOW"
+                    if not is_clarification_followup:
+                        clarification_result = await generate_clarification_question(
+                            query=userMessage,
+                            route=route,
+                            router_confidence=confidence,
+                            qa_generator=qa_generator,
+                            log_step=log_step
+                        )
+                        
+                        clarification_result['route'] = route
+                        clarification_result['route_confidence'] = confidence
+                        clarification_result['retrievalConfidence'] = retrieval_confidence
+                        clarification_result['processing_time_ms'] = (datetime.now() - pipeline_start).total_seconds() * 1000
+                        clarification_result['original_query'] = userMessage
+                        clarification_result['semanticCompleteness'] = semantic_score
+                        clarification_result['sqlPrecision'] = qa_result.get('sql_precision', None)
+                        
+                        log_step("dynamic_decision_log", {
+                            "route": "dynamic",
+                            "semanticCompleteness": semantic_score,
+                            "sqlPrecision": qa_result.get('sql_precision', None),
+                            "resultCount": result_count,
+                            "finalConfidence": final_confidence,
+                            "decision": decision
+                        })
+                        
+                        log_step("pipeline_complete", {
+                            "route": route,
+                            "confidence": confidence,
+                            "retrieval_confidence": retrieval_confidence,
+                            "processing_time_ms": clarification_result['processing_time_ms'],
+                            "requires_clarification": True,
+                            "success": True
+                        })
+                        
+                        return clarification_result
+            else:
+                decision = "FALLBACK_FLOW"
+                internet_result = await generate_internet_search_response(
+                    query=userMessage,
+                    qa_generator=qa_generator,
+                    log_step=log_step
+                )
+                
+                internet_result['route'] = route
+                internet_result['route_confidence'] = confidence
+                internet_result['retrievalConfidence'] = retrieval_confidence
+                internet_result['processing_time_ms'] = (datetime.now() - pipeline_start).total_seconds() * 1000
+                
+                log_step("dynamic_decision_log", {
+                    "route": "dynamic",
+                    "semanticCompleteness": semantic_score,
+                    "sqlPrecision": qa_result.get('sql_precision', None),
+                    "resultCount": result_count,
+                    "finalConfidence": final_confidence,
+                    "decision": decision
+                })
+                
+                log_step("pipeline_complete", {
+                    "route": route,
+                    "confidence": confidence,
+                    "retrieval_confidence": retrieval_confidence,
+                    "processing_time_ms": internet_result['processing_time_ms'],
+                    "internet_fallback": True,
+                    "success": True
+                })
+                
+                return internet_result
+            
             log_step("dynamic_route_complete", {
                 "success": qa_result.get('success', False),
-                "result_count": qa_result.get('result_count', 0),
+                "result_count": result_count,
                 "search_method": qa_result.get('search_method', 'unknown'),
                 "retrieval_confidence": retrieval_confidence,
                 "is_ambiguous_query": is_ambiguous_query
             })
+            
+            log_step("dynamic_decision_log", {
+                "route": "dynamic",
+                "semanticCompleteness": semantic_score,
+                "sqlPrecision": qa_result.get('sql_precision', None),
+                "resultCount": result_count,
+                "finalConfidence": final_confidence,
+                "decision": decision
+            })
+            
+            qa_result['semanticCompleteness'] = semantic_score
+            qa_result['sqlPrecision'] = qa_result.get('sql_precision', None)
             
         elif route == "hybrid":
             log_step("hybrid_route_start", {})
@@ -883,7 +1098,8 @@ async def processUserQuery(
                 user_id=user_id,
                 conversation_history=conversationHistory,
                 route=route,
-                route_confidence=confidence
+                route_confidence=confidence,
+                dynamic_embedding_manager=dynamic_embedding_manager
             )
             
             hybrid_dynamic_available = qa_result.get('success', False) and qa_result.get('result_count', 0) > 0
