@@ -188,6 +188,82 @@ class PolkassemblyDataFetcher:
             except Exception as e:
                 logger.error(f"Error processing {proposal_type.value}: {e}")
                 continue
+    
+    def fetch_comments_page(self, page: int = 1, limit: int = 50) -> Dict[str, Any]:
+        """Fetch comments from Polkassembly API with pagination"""
+        url = f"{self.base_url}/comments"
+        
+        params = {
+            'page': page,
+            'limit': limit
+        }
+
+        try:
+            response = requests.get(url, params=params, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching comments: {e}")
+            return {}
+
+    def fetch_all_comments(self, max_items: int = 1000) -> List[Dict]:
+        """Fetch all comments with pagination"""
+        all_comments = []
+        page = 1
+        limit = 50
+
+        logger.info(f"Fetching comments for {self.network}...")
+        
+        while len(all_comments) < max_items:
+            response_data = self.fetch_comments_page(page=page, limit=limit)
+            
+            if not response_data or 'items' not in response_data:
+                break
+                
+            comments = response_data['items']
+            if not comments:
+                break
+
+            total_count = response_data.get('totalCount', 0)
+            if total_count:
+                max_items = total_count
+                
+            all_comments.extend(comments)
+            page += 1
+            time.sleep(0.1)  # Rate limiting
+            
+            logger.info(f"Fetched {len(all_comments)} comments so far...")
+
+        return all_comments[:max_items]
+
+def fetch_comments_data(network: str = "polkadot", data_dir: str = None, max_items: int = 1000):
+    """Main function to fetch comments data for a specific network"""
+    # Use the specified directory path
+    if not data_dir:
+        data_dir = str(os.getenv("BASE_PATH")) + "/data/onchain_data"
+    
+    logger.info(f"Storing comments data in: {data_dir}")
+    
+    try:
+        logger.info(f"Starting comments fetch for {network}...")
+        
+        # Initialize fetcher with specified data directory
+        fetcher = PolkassemblyDataFetcher(network=network, data_dir=data_dir)
+        
+        # Fetch all comments
+        comments_data = fetcher.fetch_all_comments(max_items=max_items)
+        
+        if comments_data:
+            # Save comments data
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{network}_comments_{timestamp}.json"
+            fetcher.save_to_file(comments_data, filename)
+            logger.info(f"Completed comments fetch for {network}. Total comments: {len(comments_data)}")
+        else:
+            logger.warning(f"No comments data fetched for {network}")
+            
+    except Exception as e:
+        logger.error(f"Error processing comments for network {network}: {e}")
 
 def fetch_onchain_data(max_items_per_type: int = 1000, data_dir: str = None):
     """Main function to fetch onchain data for all supported networks"""
@@ -218,3 +294,6 @@ if __name__ == "__main__":
     # Fetch data for all networks and proposal types
     print(str(os.getenv("BASE_PATH")) + "/data/onchain_data")
     fetch_onchain_data(max_items_per_type=10)  # Adjust as needed
+    
+    # Example: Fetch all comments for polkadot
+    # fetch_comments_data(network="polkadot", max_items=1000)
