@@ -324,8 +324,8 @@ def fetch_off_chain_posts_data(max_items_per_type: int = 1000, data_dir: str = N
 if __name__ == "__main__":
     # Fetch data for all networks and proposal types
     print(str(os.getenv("BASE_PATH")) + "/data/onchain_data")
-    # fetch_onchain_data(max_items_per_type=10)  # Adjust as needed
+    fetch_onchain_data(max_items_per_type=10000)  # Adjust as needed
     
     # Example: Fetch all comments for polkadot
-    # fetch_comments_data(network="polkadot", max_items=1000)
-    fetch_off_chain_posts_data(max_items_per_type=5000)
+    fetch_comments_data(network="polkadot", max_items=10000)
+    fetch_off_chain_posts_data(max_items_per_type=10000)
